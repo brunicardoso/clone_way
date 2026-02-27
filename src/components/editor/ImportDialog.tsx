@@ -194,7 +194,7 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
               <Input
                 value={plasmidId}
                 onChange={(e) => setPlasmidId(e.target.value)}
-                placeholder="e.g. 42230"
+                placeholder="e.g. 74218"
                 disabled={loading}
               />
             </div>

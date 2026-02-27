@@ -22,13 +22,12 @@ const BACKBONE_RADIUS = baseTheme.layout.backboneRadius
 const BACKBONE_WIDTH = baseTheme.layout.backboneWidth
 const FEATURE_WIDTH = baseTheme.layout.featureWidth
 const OUTER_FEATURE_RADIUS = BACKBONE_RADIUS + FEATURE_WIDTH + 6
-const INNER_FEATURE_RADIUS = BACKBONE_RADIUS - FEATURE_WIDTH - 6
+const RULER_TICK_RADIUS = BACKBONE_RADIUS - BACKBONE_WIDTH / 2 - 6
+const RULER_LABEL_RADIUS = RULER_TICK_RADIUS - 1
+const INNER_FEATURE_RADIUS = RULER_LABEL_RADIUS - 20
 const SITE_TICK_INNER = BACKBONE_RADIUS - 8
 const SITE_TICK_OUTER = BACKBONE_RADIUS + 8
-const ORF_RADIUS = BACKBONE_RADIUS - FEATURE_WIDTH - 26
-const RULER_TICK_RADIUS_MINOR = BACKBONE_RADIUS - BACKBONE_WIDTH / 2 - 3
-const RULER_TICK_RADIUS_MAJOR = BACKBONE_RADIUS - BACKBONE_WIDTH / 2 - 6
-const RULER_LABEL_RADIUS = BACKBONE_RADIUS - BACKBONE_WIDTH / 2 - 14
+const ORF_RADIUS = INNER_FEATURE_RADIUS - FEATURE_WIDTH - 12
 // Feature types that render as directional arrows (all others are plain arcs)
 const ARROW_FEATURE_TYPES: Set<string> = new Set(['CDS', 'promoter'])
 const ARROWHEAD_ANGLE = 0.04  // radians (~2.3°) reserved for arrowhead tip
@@ -37,6 +36,9 @@ const ARROWHEAD_ANGLE = 0.04  // radians (~2.3°) reserved for arrowhead tip
 const SMALL_BADGE_H = 11
 const SMALL_BADGE_CHAR_W = 4
 const SMALL_BADGE_PAD_X = 5
+
+// Gap between stacked feature tracks
+const FEATURE_TRACK_GAP = 4
 
 // ViewBox padding from theme
 const PAD_X = baseTheme.layout.viewBoxPaddingX
@@ -204,6 +206,77 @@ function textArcPath(
   return `M ${s.x} ${s.y} A ${radius} ${radius} 0 ${largeArc} 1 ${e.x} ${e.y}`
 }
 
+/**
+ * Assign each feature a track index so overlapping features alternate
+ * between outer and inner sides of the backbone.
+ * Track 0 = closest outer, track 1 = closest inner, track 2 = next outer, etc.
+ */
+function assignFeatureTracks(
+  features: Sequence['features'],
+  seqLen: number,
+): Map<string, number> {
+  if (features.length === 0) return new Map()
+
+  // Normalise each feature to an angular range [startAngle, endAngle] where endAngle > startAngle
+  interface FeatInterval {
+    id: string
+    startAngle: number
+    endAngle: number
+  }
+
+  const intervals: FeatInterval[] = features.map((f) => {
+    let sa = bpToAngle(f.start, seqLen)
+    let ea = bpToAngle(f.end, seqLen)
+    // Normalise into [0, 2π)
+    if (sa < 0) sa += Math.PI * 2
+    if (ea < 0) ea += Math.PI * 2
+    // Wraparound: ensure end > start
+    if (ea <= sa) ea += Math.PI * 2
+    return { id: f.id, startAngle: sa, endAngle: ea }
+  })
+
+  // Sort by start angle, then by size (smaller first) for tighter packing
+  intervals.sort((a, b) => a.startAngle - b.startAngle || (a.endAngle - a.startAngle) - (b.endAngle - b.startAngle))
+
+  // Greedy track assignment: for each feature, find the lowest track where it doesn't overlap
+  // Track ends stores the latest endAngle used in each track
+  const trackEnds: number[] = []
+  const trackMap = new Map<string, number>()
+
+  for (const interval of intervals) {
+    let assigned = -1
+    for (let t = 0; t < trackEnds.length; t++) {
+      // Check if this track is free (no overlap)
+      if (trackEnds[t] <= interval.startAngle) {
+        assigned = t
+        break
+      }
+    }
+    if (assigned === -1) {
+      assigned = trackEnds.length
+      trackEnds.push(0)
+    }
+    trackEnds[assigned] = interval.endAngle
+    trackMap.set(interval.id, assigned)
+  }
+
+  return trackMap
+}
+
+/**
+ * Compute the center radius for a feature given its track index.
+ * Even tracks (0, 2, 4…) go outside the backbone, odd tracks (1, 3, 5…) go inside.
+ */
+function trackRadius(track: number): number {
+  const ring = Math.floor(track / 2)  // which "ring" (0 = closest, 1 = next, …)
+  const isOuter = track % 2 === 0
+  if (isOuter) {
+    return OUTER_FEATURE_RADIUS - FEATURE_WIDTH / 2 + ring * (FEATURE_WIDTH + FEATURE_TRACK_GAP)
+  } else {
+    return INNER_FEATURE_RADIUS + FEATURE_WIDTH / 2 - ring * (FEATURE_WIDTH + FEATURE_TRACK_GAP)
+  }
+}
+
 /** A label to be placed in the left/right columns outside the map. */
 interface ExternalLabel {
   id: string
@@ -342,6 +415,12 @@ export function CircularMap({ sequence: sequenceProp }: CircularMapProps = {}) {
     [sequence, setSelectedRange],
   )
 
+  // Assign tracks to overlapping features (alternating outer/inner)
+  const featureTrackMap = useMemo(() => {
+    if (!sequence || !showFeatures) return new Map<string, number>()
+    return assignFeatureTracks(sequence.features, sequence.length)
+  }, [sequence, showFeatures])
+
   // Classify features into large (inline text) and small (external badge)
   const { largeFeatures, smallFeatures } = useMemo(() => {
     type F = Sequence['features']
@@ -352,9 +431,8 @@ export function CircularMap({ sequence: sequenceProp }: CircularMapProps = {}) {
     const small: F = []
 
     for (const f of sequence.features) {
-      const radius = f.strand === 1
-        ? OUTER_FEATURE_RADIUS - FEATURE_WIDTH / 2
-        : INNER_FEATURE_RADIUS + FEATURE_WIDTH / 2
+      const track = featureTrackMap.get(f.id) ?? 0
+      const radius = trackRadius(track)
 
       let angleDiff = bpToAngle(f.end, sequence.length) - bpToAngle(f.start, sequence.length)
       if (angleDiff < 0) angleDiff += Math.PI * 2
@@ -368,7 +446,7 @@ export function CircularMap({ sequence: sequenceProp }: CircularMapProps = {}) {
       }
     }
     return { largeFeatures: large, smallFeatures: small }
-  }, [sequence, showFeatures])
+  }, [sequence, showFeatures, featureTrackMap])
 
   // Unified external labels: restriction sites + small features in shared left/right columns
   const externalLabels = useMemo(() => {
@@ -395,9 +473,8 @@ export function CircularMap({ sequence: sequenceProp }: CircularMapProps = {}) {
         const midBp = f.start <= f.end
           ? (f.start + f.end) / 2
           : ((f.start + f.end + sequence.length) / 2) % sequence.length
-        const arcRadius = f.strand === 1
-          ? OUTER_FEATURE_RADIUS
-          : INNER_FEATURE_RADIUS
+        const track = featureTrackMap.get(f.id) ?? 0
+        const arcRadius = trackRadius(track) + FEATURE_WIDTH / 2
         items.push({
           id: f.id,
           name: f.name,
@@ -410,18 +487,19 @@ export function CircularMap({ sequence: sequenceProp }: CircularMapProps = {}) {
     }
 
     return assignExternalLabels(items)
-  }, [sequence, showFeatures, showRestrictionSites, smallFeatures])
+  }, [sequence, showFeatures, showRestrictionSites, smallFeatures, featureTrackMap])
 
-  // Ruler ticks
+  // Ruler ticks (major only)
   const rulerTicks = useMemo(() => {
     if (!sequence || sequence.length === 0) return []
-    const interval = Math.max(
+    const baseInterval = Math.max(
       1,
       Math.pow(10, Math.floor(Math.log10(sequence.length / 10))),
     )
-    const ticks: { bp: number; major: boolean }[] = []
-    for (let bp = 0; bp < sequence.length; bp += interval) {
-      ticks.push({ bp, major: bp % (interval * 5) === 0 })
+    const majorInterval = baseInterval * 5
+    const ticks: number[] = []
+    for (let bp = 0; bp < sequence.length; bp += majorInterval) {
+      ticks.push(bp)
     }
     return ticks
   }, [sequence])
@@ -574,37 +652,39 @@ export function CircularMap({ sequence: sequenceProp }: CircularMapProps = {}) {
           {...NSS}
         />
 
-        {/* Ruler ticks around the ring */}
-        {rulerTicks.map((tick) => {
-          const angle = bpToAngle(tick.bp, seqLen)
+        {/* Ruler ticks (major only) around the ring */}
+        {rulerTicks.map((bp) => {
+          const angle = bpToAngle(bp, seqLen)
           const outer = polarToCart(angle, BACKBONE_RADIUS - BACKBONE_WIDTH / 2 - 1)
-          const inner = polarToCart(angle, tick.major ? RULER_TICK_RADIUS_MAJOR : RULER_TICK_RADIUS_MINOR)
+          const inner = polarToCart(angle, RULER_TICK_RADIUS)
+          // Place label to the left (clockwise-trailing) side of the tick
+          const labelPos = polarToCart(angle, RULER_LABEL_RADIUS)
+          // Tangent angle: perpendicular to the radial direction, pointing clockwise
+          const tangentDeg = (angle * 180) / Math.PI + 90
           return (
-            <g key={`tick-${tick.bp}`}>
+            <g key={`tick-${bp}`}>
               <line
                 x1={outer.x}
                 y1={outer.y}
                 x2={inner.x}
                 y2={inner.y}
                 stroke={theme.colors.ruler}
-                strokeWidth={tick.major ? theme.strokes.rulerTickMajor : theme.strokes.rulerTickMinor}
+                strokeWidth={theme.strokes.rulerTickMajor}
                 {...NSS}
               />
-              {tick.major && (
-                <text
-                  x={polarToCart(angle, RULER_LABEL_RADIUS).x}
-                  y={polarToCart(angle, RULER_LABEL_RADIUS).y}
-                  fill={theme.colors.rulerLabel}
-                  fontSize={theme.typography.rulerLabelSize}
-                  fontFamily={theme.typography.fontFamily}
-                  fontWeight={theme.typography.coordWeight}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  transform={`rotate(${(angle * 180) / Math.PI + 90}, ${polarToCart(angle, RULER_LABEL_RADIUS).x}, ${polarToCart(angle, RULER_LABEL_RADIUS).y})`}
-                >
-                  {tick.bp}
-                </text>
-              )}
+              <text
+                x={labelPos.x} y={labelPos.y}
+                fill={theme.colors.rulerLabel}
+                fontSize={theme.typography.rulerLabelSize}
+                fontFamily={theme.typography.fontFamily}
+                fontWeight={theme.typography.coordWeight}
+                textAnchor="end"
+                dominantBaseline="middle"
+                transform={`rotate(${tangentDeg}, ${labelPos.x}, ${labelPos.y})`}
+                dx={-2}
+              >
+                {bp}
+              </text>
             </g>
           )
         })}
@@ -614,10 +694,8 @@ export function CircularMap({ sequence: sequenceProp }: CircularMapProps = {}) {
           sequence.features.map((f) => {
             const color = getThemedFeatureColor(f.type, theme)
             const style = getThemedFeatureStyle(f.type, color, theme, colorOpacity)
-            const radius =
-              f.strand === 1
-                ? OUTER_FEATURE_RADIUS - FEATURE_WIDTH / 2
-                : INNER_FEATURE_RADIUS + FEATURE_WIDTH / 2
+            const track = featureTrackMap.get(f.id) ?? 0
+            const radius = trackRadius(track)
             const hasArrow = ARROW_FEATURE_TYPES.has(f.type)
 
             const onClick = (e: React.MouseEvent) => {
@@ -674,9 +752,8 @@ export function CircularMap({ sequence: sequenceProp }: CircularMapProps = {}) {
 
         {/* ── Large-feature inline labels (curved text inside the arc) ── */}
         {showFeatures && largeFeatures.map((f) => {
-          const radius = f.strand === 1
-            ? OUTER_FEATURE_RADIUS - FEATURE_WIDTH / 2
-            : INNER_FEATURE_RADIUS + FEATURE_WIDTH / 2
+          const track = featureTrackMap.get(f.id) ?? 0
+          const radius = trackRadius(track)
           const textPathId = `tp-${f.id}`
 
           // For arrow features, inset the text path to avoid the arrowhead zone

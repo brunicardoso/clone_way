@@ -67,7 +67,7 @@ export function AddgeneImportDialog({
             <Input
               value={plasmidId}
               onChange={(e) => setPlasmidId(e.target.value)}
-              placeholder="e.g. 42230"
+              placeholder="e.g. 74218"
               autoFocus
               disabled={loading}
             />

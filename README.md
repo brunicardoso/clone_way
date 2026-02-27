@@ -1,6 +1,6 @@
 # CloneWay (CYW) - Molecular Biology Suite
 
-An open-source, local-first, GUI-first molecular biology suite for sequence design, analysis, and cloning planning. All data stays in your browser — no accounts, no telemetry, no uploads.
+An open-source, GUI-first molecular biology suite for sequence design, analysis, and cloning planning. All data stays in your browser — no accounts, no telemetry, no uploads.
 
 ## Features
 

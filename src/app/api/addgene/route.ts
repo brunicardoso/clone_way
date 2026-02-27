@@ -45,6 +45,12 @@ export async function GET(request: NextRequest) {
       )
     }
 
+    // Extract cookies from page response to forward to CDN requests
+    const setCookies = pageRes.headers.getSetCookie?.() ?? []
+    const cookieHeader = setCookies
+      .map((c) => c.split(';')[0])
+      .join('; ')
+
     const html = await pageRes.text()
 
     // Extract the plasmid name from the page HTML
@@ -54,12 +60,12 @@ export async function GET(request: NextRequest) {
     const plasmidName =
       titleMatch?.[1]?.replace(/<[^>]+>/g, '').trim() || `Addgene_${id}`
 
-    // Strategy 1: Try to download the GenBank file from the CDN
-    const gbkMatch = html.match(
-      /https:\/\/media\.addgene\.org\/snapgene-media\/[^"'\s]+\.gbk/,
+    // Strategy 1: Try to download GenBank files from the CDN (try all matches)
+    const gbkMatches = html.matchAll(
+      /https:\/\/media\.addgene\.org\/snapgene-media\/[^"'\s]+\.gbk/g,
     )
 
-    if (gbkMatch) {
+    for (const gbkMatch of gbkMatches) {
       try {
         const gbkRes = await fetch(gbkMatch[0], {
           cache: 'no-store',
@@ -67,6 +73,7 @@ export async function GET(request: NextRequest) {
             'User-Agent':
               'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)',
             Referer: pageUrl,
+            ...(cookieHeader ? { Cookie: cookieHeader } : {}),
           },
         })
 
@@ -82,7 +89,7 @@ export async function GET(request: NextRequest) {
           }
         }
       } catch {
-        // CDN download failed, fall through to strategy 2
+        // CDN download failed, try next URL
       }
     }
 
