@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/logo.svg" alt="CloneWay Logo" width="150" />
+</p>
+
 # CloneWay - Molecular Biology Suite
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18851838.svg)](https://doi.org/10.5281/zenodo.18851838)
@@ -6,7 +10,7 @@ An open-source, GUI-first molecular biology suite for sequence design, analysis,
 
 **[Try CloneWay Online](https://clone-way.vercel.app/editor)**
 
-![CloneWay Quick Demo](public/clone_way_quick_demo.mp4)
+<video src="https://github.com/brunicardoso/clone_way/raw/main/public/clone_way_quick_demo.mp4" controls="controls" width="100%"></video>
 
 ## Features
 
