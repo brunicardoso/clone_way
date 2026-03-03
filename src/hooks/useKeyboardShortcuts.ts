@@ -8,6 +8,16 @@ type ActionHandler = (action: string) => void
 export function useKeyboardShortcuts(onAction: ActionHandler) {
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      // Don't intercept shortcuts when the user is typing in an input, textarea,
+      // or contentEditable element (e.g. dialog forms, search bars)
+      const target = e.target as HTMLElement | null
+      if (target) {
+        const tag = target.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) {
+          return
+        }
+      }
+
       const mod = e.metaKey || e.ctrlKey
       for (const binding of KEYBINDINGS) {
         if (

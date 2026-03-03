@@ -65,6 +65,7 @@ export function SequenceToolbar() {
 
   const [addFeatureOpen, setAddFeatureOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
+  const [importInitialTab, setImportInitialTab] = useState<'file' | 'addgene' | 'ncbi'>('file')
   const [featureLibraryOpen, setFeatureLibraryOpen] = useState(false)
   const [alignmentOpen, setAlignmentOpen] = useState(false)
   const [blastOpen, setBlastOpen] = useState(false)
@@ -96,15 +97,21 @@ export function SequenceToolbar() {
 
   // Listen for programmatic import triggers (from Magic Bar / keyboard shortcuts)
   useEffect(() => {
-    const handler = () => setImportOpen(true)
+    const handler = () => { setImportInitialTab('file'); setImportOpen(true) }
     window.addEventListener('cyw:trigger-import', handler)
     return () => window.removeEventListener('cyw:trigger-import', handler)
   }, [])
 
   useEffect(() => {
-    const handler = () => setImportOpen(true)
+    const handler = () => { setImportInitialTab('addgene'); setImportOpen(true) }
     window.addEventListener('cyw:trigger-addgene', handler)
     return () => window.removeEventListener('cyw:trigger-addgene', handler)
+  }, [])
+
+  useEffect(() => {
+    const handler = () => { setImportInitialTab('ncbi'); setImportOpen(true) }
+    window.addEventListener('cyw:trigger-ncbi', handler)
+    return () => window.removeEventListener('cyw:trigger-ncbi', handler)
   }, [])
 
   useEffect(() => {
@@ -149,14 +156,16 @@ export function SequenceToolbar() {
 
   useEffect(() => {
     const handler = () => {
-      const seq = useSequenceStore.getState().sequence
-      if (!seq) return
+      if (!useSequenceStore.getState().sequence) return
       useSequenceStore.getState().commitChanges()
-      useAppStore.getState().addRecentSequence(seq)
       useTabStore.getState().syncActiveSequence()
+      const seq = useSequenceStore.getState().sequence!
+      useAppStore.getState().addRecentSequence(seq)
       const project = useProjectStore.getState()
       if (project.isOpen) {
         project.saveSequence(seq)
+      } else {
+        setExportOpen(true)
       }
     }
     window.addEventListener('cyw:trigger-project-save', handler)
@@ -246,13 +255,15 @@ export function SequenceToolbar() {
           disabled={!hasSequence || !isDirty}
           className="h-8 w-8"
           onClick={() => {
-            const seq = useSequenceStore.getState().sequence
-            if (!seq) return
+            if (!useSequenceStore.getState().sequence) return
             useSequenceStore.getState().commitChanges()
-            useAppStore.getState().addRecentSequence(seq)
             useTabStore.getState().syncActiveSequence()
+            const seq = useSequenceStore.getState().sequence!
+            useAppStore.getState().addRecentSequence(seq)
             if (useProjectStore.getState().isOpen) {
               useProjectStore.getState().saveSequence(seq)
+            } else {
+              setExportOpen(true)
             }
           }}
         >
@@ -293,18 +304,22 @@ export function SequenceToolbar() {
         <Separator />
 
         {/* View modes */}
-        {viewModes.map(({ mode, icon: Icon, label }) => (
-          <Button
-            key={mode}
-            variant={viewMode === mode ? 'default' : 'ghost'}
-            size="icon"
-            onClick={() => setViewMode(mode)}
-            title={label}
-            className="h-8 w-8"
-          >
-            <Icon className="h-4 w-4" />
-          </Button>
-        ))}
+        {viewModes.map(({ mode, icon: Icon, label }) => {
+          const isCircularDisabled = mode === 'circular' && sequence && !sequence.isCircular
+          return (
+            <Button
+              key={mode}
+              variant={viewMode === mode ? 'default' : 'ghost'}
+              size="icon"
+              onClick={() => !isCircularDisabled && setViewMode(mode)}
+              title={isCircularDisabled ? 'Circular view requires a circular sequence' : label}
+              disabled={!!isCircularDisabled}
+              className="h-8 w-8"
+            >
+              <Icon className="h-4 w-4" />
+            </Button>
+          )
+        })}
 
         <Separator />
 
@@ -372,7 +387,7 @@ export function SequenceToolbar() {
 
       {/* Dialogs */}
       <AddFeatureDialog open={addFeatureOpen} onOpenChange={setAddFeatureOpen} />
-      <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
+      <ImportDialog open={importOpen} onOpenChange={setImportOpen} initialTab={importInitialTab} />
       <FeatureLibraryPanel open={featureLibraryOpen} onOpenChange={setFeatureLibraryOpen} />
       <AlignmentDialog open={alignmentOpen} onOpenChange={setAlignmentOpen} onResult={handleAlignmentResult} />
       <BlastDialog open={blastOpen} onOpenChange={setBlastOpen} onSubmitted={handleBlastSubmitted} />

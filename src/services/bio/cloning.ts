@@ -51,6 +51,23 @@ function simpleTm(seq: string): number {
   return 2 * at + 4 * gc
 }
 
+/**
+ * Rotate a circular sequence so that a given offset becomes position 0.
+ * Features are shifted accordingly, handling wraparound.
+ */
+function rotateCircularSequence(seq: Sequence, amount: number): Sequence {
+  const len = seq.bases.length
+  const rot = ((amount % len) + len) % len
+  if (rot === 0) return seq
+  const rotatedBases = seq.bases.slice(rot) + seq.bases.slice(0, rot)
+  const features = seq.features.map((f) => {
+    const newStart = (f.start - rot + len) % len
+    const newEnd = (f.end - rot + len) % len
+    return { ...f, start: newStart, end: newEnd }
+  })
+  return { ...seq, bases: rotatedBases, length: len, features }
+}
+
 /** Shift features that fall within a region into a new coordinate space */
 function inheritFeaturesRange(
   features: Feature[],
@@ -254,6 +271,98 @@ export function assembleGibson(
 // Cloning Plans
 // ---------------------------------------------------------------------------
 
+/**
+ * Prepare an insert by adding restriction enzyme recognition sequences at its ends.
+ * Simulates the PCR product from primers that include restriction sites.
+ * Features are shifted to account for the prepended 5' site.
+ */
+export function prepareInsertWithSites(
+  insert: Sequence,
+  enzyme5Name: string,
+  enzyme3Name: string,
+): Sequence {
+  const e5 = COMMON_ENZYMES.find((e) => e.name === enzyme5Name)
+  const e3 = COMMON_ENZYMES.find((e) => e.name === enzyme3Name)
+  if (!e5 || !e3) throw new Error(`Unknown enzyme: ${e5 ? enzyme3Name : enzyme5Name}`)
+
+  const prefix = e5.recognitionSequence.toUpperCase()
+  const suffix = e3.recognitionSequence.toUpperCase()
+  const newBases = prefix + insert.bases + suffix
+  const shift = prefix.length
+
+  // Shift all existing features by the length of the prepended site
+  const shiftedFeatures: Feature[] = insert.features.map((f) => ({
+    ...f,
+    id: uuidv4(),
+    start: f.start + shift,
+    end: f.end + shift,
+  }))
+
+  return makeSequence({
+    name: `${insert.name} (with ${enzyme5Name}/${enzyme3Name} sites)`,
+    bases: newBases,
+    isCircular: false,
+    features: shiftedFeatures,
+  })
+}
+
+/**
+ * Check whether an enzyme has internal cut sites in a sequence
+ * (i.e. sites that are NOT at the very ends, within a tolerance).
+ */
+export function hasInternalSites(
+  bases: string,
+  enzymeName: string,
+  endTolerance: number = 6,
+): boolean {
+  const enzyme = COMMON_ENZYMES.find((e) => e.name === enzymeName)
+  if (!enzyme) return false
+  const sites = findRestrictionSites(bases, enzyme)
+  return sites.some(
+    (s) => s.position >= endTolerance && s.position + enzyme.recognitionSequence.length <= bases.length - endTolerance,
+  )
+}
+
+/**
+ * Design PCR primers that add restriction sites to the ends of an insert.
+ * Forward primer: enzyme5 recognition seq + ~18-20bp binding the insert 5' end.
+ * Reverse primer: reverse complement of (insert 3' end + enzyme3 recognition seq).
+ */
+export function designRestrictionSitePrimers(
+  insertBases: string,
+  enzyme5Name: string,
+  enzyme3Name: string,
+  bindingLength: number = 20,
+): { forward: string; reverse: string; forwardTm: number; reverseTm: number; fwdTailLen: number; revTailLen: number } {
+  const e5 = COMMON_ENZYMES.find((e) => e.name === enzyme5Name)
+  const e3 = COMMON_ENZYMES.find((e) => e.name === enzyme3Name)
+  if (!e5 || !e3) throw new Error(`Unknown enzyme: ${e5 ? enzyme3Name : enzyme5Name}`)
+
+  const upper = insertBases.toUpperCase()
+  const bindLen = Math.min(bindingLength, upper.length)
+
+  // Forward primer: restriction site tail + binding region at insert 5' end
+  const fwdBinding = upper.slice(0, bindLen)
+  const forward = e5.recognitionSequence.toUpperCase() + fwdBinding
+  const fwdTailLen = e5.recognitionSequence.length
+
+  // Reverse primer: RC(insert 3' binding + enzyme3 recognition seq)
+  // Result is: RC(enzyme3_seq) + RC(3' binding) — tail is at 5' end of primer
+  const revBinding = upper.slice(upper.length - bindLen)
+  const revTemplate = revBinding + e3.recognitionSequence.toUpperCase()
+  const reverse = reverseComplement(revTemplate)
+  const revTailLen = e3.recognitionSequence.length
+
+  return {
+    forward,
+    reverse,
+    forwardTm: simpleTm(fwdBinding), // Tm of binding portion only
+    reverseTm: simpleTm(revBinding),
+    fwdTailLen,
+    revTailLen,
+  }
+}
+
 export function planRestrictionLigation(
   vector: Sequence,
   insert: Sequence,
@@ -319,11 +428,23 @@ export function planRestrictionLigation(
         (f) => !(f.leftEnzyme === enzyme3 && f.rightEnzyme === enzyme5),
       ) ?? insertDigest.fragments[0]
 
-  const product = ligateFragments(
+  let product = ligateFragments(
     [vectorBackbone, insertFragment],
     vector.isCircular,
   )
   product.name = `${vector.name} + ${insert.name}`
+
+  // Rotate the product so that the backbone's origin (position 0 of the
+  // original vector) ends up at position 0 of the product.
+  // The backbone fragment starts at vectorBackbone.startInOriginal in the
+  // original vector. If it wraps past position 0, original position 0 is
+  // at offset (vector.length - vectorBackbone.startInOriginal) in the product.
+  if (vector.isCircular && vectorBackbone.startInOriginal > 0) {
+    const originOffset = vector.length - vectorBackbone.startInOriginal
+    if (originOffset > 0 && originOffset < product.bases.length) {
+      product = rotateCircularSequence(product, originOffset)
+    }
+  }
 
   steps.push({
     id: uuidv4(),
@@ -516,16 +637,41 @@ export function planMutagenesis(
   template: Sequence,
   position: number,
   newBases: string,
+  mutationType: 'substitution' | 'insertion' | 'deletion' = 'substitution',
+  deleteLength?: number,
 ): CloningPlan {
   const steps: CloningStep[] = []
-  const mutEnd = position + newBases.length - 1
+
+  // Compute mutationStart/mutationEnd and effective newBases per type
+  let mutEnd: number
+  let effectiveNewBases: string
+  let originalBases: string
+
+  switch (mutationType) {
+    case 'substitution':
+      mutEnd = position + newBases.length - 1
+      effectiveNewBases = newBases.toUpperCase()
+      originalBases = template.bases.slice(position, mutEnd + 1)
+      break
+    case 'insertion':
+      // Nothing is removed; mutEnd < position signals a pure insertion
+      mutEnd = position - 1
+      effectiveNewBases = newBases.toUpperCase()
+      originalBases = ''
+      break
+    case 'deletion':
+      mutEnd = position + (deleteLength ?? 1) - 1
+      effectiveNewBases = ''
+      originalBases = template.bases.slice(position, mutEnd + 1)
+      break
+  }
 
   // Step 1: Design primers
   const primers = designMutagenesisPrimers(
     template.bases,
     position,
     mutEnd,
-    newBases,
+    effectiveNewBases,
   )
 
   steps.push({
@@ -555,12 +701,13 @@ export function planMutagenesis(
   // Step 3: Build mutant product
   const mutBases =
     template.bases.slice(0, position) +
-    newBases.toUpperCase() +
+    effectiveNewBases +
     template.bases.slice(mutEnd + 1)
 
   // Shift features around the mutation
+  const removedLen = mutEnd - position + 1
+  const shift = effectiveNewBases.length - removedLen
   const features: Feature[] = template.features.map((f) => {
-    const shift = newBases.length - (mutEnd - position + 1)
     if (f.end < position) return { ...f, id: uuidv4() }
     if (f.start > mutEnd) {
       return { ...f, id: uuidv4(), start: f.start + shift, end: f.end + shift }
@@ -573,9 +720,27 @@ export function planMutagenesis(
     }
   })
 
+  // Build description per mutation type
+  let description: string
+  let planName: string
+  switch (mutationType) {
+    case 'substitution':
+      description = `Site-directed mutagenesis at position ${position + 1}: ${originalBases} → ${effectiveNewBases}`
+      planName = `Mutagenesis: ${originalBases} → ${effectiveNewBases} in ${template.name}`
+      break
+    case 'insertion':
+      description = `Insertion at position ${position + 1}: insert ${effectiveNewBases} (${effectiveNewBases.length} bp)`
+      planName = `Insertion: ${effectiveNewBases} at pos ${position + 1} in ${template.name}`
+      break
+    case 'deletion':
+      description = `Deletion at position ${position + 1}: remove ${originalBases} (${removedLen} bp)`
+      planName = `Deletion: ${removedLen} bp at pos ${position + 1} in ${template.name}`
+      break
+  }
+
   const product = makeSequence({
     name: `${template.name} (mutant)`,
-    description: `Site-directed mutagenesis at position ${position + 1}: ${template.bases.slice(position, mutEnd + 1)} → ${newBases.toUpperCase()}`,
+    description,
     bases: mutBases,
     isCircular: template.isCircular,
     features,
@@ -592,7 +757,7 @@ export function planMutagenesis(
 
   return {
     id: uuidv4(),
-    name: `Mutagenesis: ${template.bases.slice(position, mutEnd + 1)} → ${newBases.toUpperCase()} in ${template.name}`,
+    name: planName,
     method: 'site-directed-mutagenesis',
     steps,
     vector: template,

@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSequenceStore } from '@/stores/useSequenceStore'
 import { useEditorStore } from '@/stores/useEditorStore'
-import { ZoomIn, ZoomOut } from 'lucide-react'
+import { Minus, Plus, MousePointer, Pencil, Trash2, Circle, Minus as LinearIcon } from 'lucide-react'
 import { FEATURE_COLORS } from '@/lib/constants'
 import { translate } from '@/services/bio/codons'
-import type { Sequence } from '@/types'
+import { RenameFeatureDialog } from './RenameFeatureDialog'
+import type { Feature, Sequence } from '@/types'
 
 const BASE_FONT_SIZE = 14
 const MIN_FONT_SIZE = 8
@@ -20,6 +21,15 @@ const COMPLEMENT: Record<string, string> = {
 }
 
 const VALID_BASES = new Set(['a', 't', 'g', 'c', 'n'])
+
+function reverseComplement(seq: string): string {
+  const comp: Record<string, string> = { A: 'T', T: 'A', C: 'G', G: 'C', N: 'N' }
+  let rc = ''
+  for (let i = seq.length - 1; i >= 0; i--) {
+    rc += comp[seq[i].toUpperCase()] ?? 'N'
+  }
+  return rc
+}
 
 
 // Distinct colors for overlapping restriction enzyme sites
@@ -61,7 +71,14 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
   const [selectStart, setSelectStart] = useState<number | null>(null)
   const [selectEnd, setSelectEnd] = useState<number | null>(null)
   const isSelecting = useRef(false)
+  const selectEndRef = useRef<number | null>(null)
+  const rafId = useRef<number | null>(null)
+  const autoScrollTimer = useRef<ReturnType<typeof setInterval> | null>(null)
+  const lastMouseY = useRef<number>(0)
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; feature: Feature } | null>(null)
+  const [renameFeature, setRenameFeature] = useState<Feature | null>(null)
+  const removeFeature = useSequenceStore((s) => s.removeFeature)
 
   // Mouse wheel zoom (Ctrl/Cmd + scroll)
   useEffect(() => {
@@ -111,6 +128,28 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
     return colors
   }, [sequence, showFeatures])
 
+  // Pre-compute feature name for each base position (for tooltip)
+  const baseFeatureNames = useMemo(() => {
+    if (!sequence || !showFeatures) return []
+    const names: (string | null)[] = new Array(sequence.length).fill(null)
+    for (const feature of sequence.features) {
+      const label = `${feature.name} (${feature.type})`
+      if (feature.start <= feature.end) {
+        for (let i = feature.start; i <= feature.end && i < sequence.length; i++) {
+          if (!names[i]) names[i] = label
+        }
+      } else {
+        for (let i = feature.start; i < sequence.length; i++) {
+          if (!names[i]) names[i] = label
+        }
+        for (let i = 0; i <= feature.end && i < sequence.length; i++) {
+          if (!names[i]) names[i] = label
+        }
+      }
+    }
+    return names
+  }, [sequence, showFeatures])
+
   // Pre-compute ORF positions for underline decoration
   const orfPositions = useMemo(() => {
     if (!sequence || !showOrfs) return new Set<number>()
@@ -136,18 +175,25 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
         if (feature.type !== 'CDS') continue
         const color = feature.color || FEATURE_COLORS[feature.type] || '#607D8B'
         let subseq: string
-        let startPos: number
         if (feature.start <= feature.end) {
           subseq = sequence.bases.slice(feature.start, feature.end + 1)
-          startPos = feature.start
         } else {
           // Wraparound CDS on circular sequence
           subseq = sequence.bases.slice(feature.start) + sequence.bases.slice(0, feature.end + 1)
-          startPos = feature.start
         }
-        const protein = translate(subseq)
+        const isMinus = feature.strand === -1
+        const protein = translate(isMinus ? reverseComplement(subseq) : subseq)
         for (let i = 0; i < protein.length; i++) {
-          const pos = (startPos + i * 3 + 1) % sequence.length // second base of codon
+          // For plus strand: amino acid i at the 2nd base of codon i (left to right)
+          // For minus strand: amino acid i at the 2nd base of codon i reading right to left
+          let pos: number
+          if (isMinus) {
+            // RC codon i corresponds to original positions [end - 3i, end - 3i - 1, end - 3i - 2]
+            const featureEnd = feature.start <= feature.end ? feature.end : feature.end + sequence.length
+            pos = (featureEnd - 3 * i - 1) % sequence.length
+          } else {
+            pos = (feature.start + i * 3 + 1) % sequence.length
+          }
           if (!data.has(pos)) {
             data.set(pos, { amino: protein[i], color: protein[i] === '*' ? '#dc2626' : color })
           }
@@ -161,9 +207,12 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
         const start = Math.min(orf.start, orf.end)
         const end = Math.max(orf.start, orf.end)
         const subseq = sequence.bases.slice(start, end + 1)
-        const protein = translate(subseq)
+        const isMinus = orf.strand === -1
+        const protein = translate(isMinus ? reverseComplement(subseq) : subseq)
         for (let i = 0; i < protein.length; i++) {
-          const pos = start + i * 3 + 1 // second base of codon
+          // For minus strand ORFs: codons read right to left
+          const pos = isMinus ? end - 3 * i - 1 : start + i * 3 + 1
+          if (pos < 0 || pos >= sequence.length) continue
           if (!data.has(pos)) {
             data.set(pos, { amino: protein[i], color: protein[i] === '*' ? '#dc2626' : '#22c55e' })
           }
@@ -300,47 +349,155 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
     [selectedRange, selectStart, selectEnd],
   )
 
+  // Stop auto-scroll and clean up animation frame
+  const stopAutoScroll = useCallback(() => {
+    if (autoScrollTimer.current) {
+      clearInterval(autoScrollTimer.current)
+      autoScrollTimer.current = null
+    }
+  }, [])
+
+  // Start auto-scrolling when the mouse is near the edges during selection
+  const startAutoScroll = useCallback(() => {
+    if (autoScrollTimer.current) return
+    autoScrollTimer.current = setInterval(() => {
+      const container = containerRef.current
+      if (!container || !isSelecting.current) {
+        stopAutoScroll()
+        return
+      }
+      const rect = container.getBoundingClientRect()
+      const y = lastMouseY.current
+      const edgeZone = 40 // pixels from edge to trigger scroll
+
+      let scrollDelta = 0
+      if (y < rect.top + edgeZone) {
+        // Near top edge — scroll up
+        scrollDelta = -Math.max(8, (edgeZone - (y - rect.top)) * 0.5)
+      } else if (y > rect.bottom - edgeZone) {
+        // Near bottom edge — scroll down
+        scrollDelta = Math.max(8, (edgeZone - (rect.bottom - y)) * 0.5)
+      }
+
+      if (scrollDelta !== 0) {
+        container.scrollTop += scrollDelta
+        // After scrolling, find the element under the mouse and update selection
+        const el = document.elementFromPoint(lastMouseY.current > rect.bottom ? rect.left + GUTTER_WIDTH + 20 : rect.left + GUTTER_WIDTH + 20, Math.min(Math.max(y, rect.top + 4), rect.bottom - 4))
+        if (el instanceof HTMLElement) {
+          const baseEl = el.closest('[data-base-idx]') as HTMLElement | null
+          if (baseEl) {
+            const idx = Number(baseEl.dataset.baseIdx)
+            if (!isNaN(idx) && idx !== selectEndRef.current) {
+              selectEndRef.current = idx
+              setSelectEnd(idx)
+            }
+          }
+        }
+      }
+    }, 30) // ~33fps for auto-scroll
+  }, [stopAutoScroll])
+
+  // Clean up on unmount
+  useEffect(() => {
+    return () => {
+      stopAutoScroll()
+      if (rafId.current) cancelAnimationFrame(rafId.current)
+    }
+  }, [stopAutoScroll])
+
   const handleMouseDown = useCallback(
     (index: number) => {
       if (editMode) {
         setCursorPosition(index)
-        setSelectedRange(null)
       }
+      // Always clear any previous committed selection when starting a new drag
+      setSelectedRange(null)
       isSelecting.current = true
+      selectEndRef.current = index
       setSelectStart(index)
       setSelectEnd(index)
     },
     [editMode, setCursorPosition, setSelectedRange],
   )
 
-  const handleMouseEnter = useCallback(
-    (index: number) => {
-      setHoveredIndex(index)
-      if (isSelecting.current) {
-        setSelectEnd(index)
+  // Container-level mousemove: use elementFromPoint to reliably find the base
+  // under the cursor (e.target is unreliable during drag due to pointer capture)
+  const handleContainerMouseMove = useCallback(
+    (e: React.MouseEvent) => {
+      const el = document.elementFromPoint(e.clientX, e.clientY)
+      if (!el || !(el instanceof HTMLElement)) {
+        if (!isSelecting.current) setHoveredIndex(null)
+        return
+      }
+      const baseEl = el.closest('[data-base-idx]') as HTMLElement | null
+      if (baseEl) {
+        const idx = Number(baseEl.dataset.baseIdx)
+        if (!isNaN(idx)) {
+          setHoveredIndex(idx)
+          if (isSelecting.current) {
+            selectEndRef.current = idx
+            if (rafId.current === null) {
+              rafId.current = requestAnimationFrame(() => {
+                rafId.current = null
+                setSelectEnd(selectEndRef.current)
+              })
+            }
+          }
+        }
+      } else {
+        if (!isSelecting.current) {
+          setHoveredIndex(null)
+        }
       }
     },
     [],
   )
 
   const handleMouseUp = useCallback(() => {
-    if (isSelecting.current && selectStart !== null && selectEnd !== null) {
+    stopAutoScroll()
+    if (isSelecting.current && selectStart !== null) {
       isSelecting.current = false
-      const start = Math.min(selectStart, selectEnd)
-      const end = Math.max(selectStart, selectEnd)
-      if (start === end && editMode) {
-        // Single click in edit mode — just set cursor, don't make selection
-        setCursorPosition(start)
+      // Use the ref for the latest value to avoid stale closure
+      const end = selectEndRef.current ?? selectStart
+      const start = Math.min(selectStart, end)
+      const finalEnd = Math.max(selectStart, end)
+      if (start === finalEnd) {
+        // Single click — clear any existing selection
+        setSelectedRange(null)
+        if (editMode) {
+          setCursorPosition(start)
+        }
       } else {
-        setSelectedRange({ start, end, wrapsAround: false })
+        setSelectedRange({ start, end: finalEnd, wrapsAround: false })
         if (editMode) {
           setCursorPosition(null)
         }
       }
       setSelectStart(null)
       setSelectEnd(null)
+      selectEndRef.current = null
     }
-  }, [selectStart, selectEnd, setSelectedRange, editMode, setCursorPosition])
+  }, [selectStart, setSelectedRange, editMode, setCursorPosition, stopAutoScroll])
+
+  // Track mouse position for auto-scroll and handle mouseup outside container
+  useEffect(() => {
+    const handleMove = (e: MouseEvent) => {
+      lastMouseY.current = e.clientY
+    }
+    const handleGlobalUp = () => {
+      // Finalize selection even if mouse is released outside the container
+      handleMouseUp()
+    }
+    if (selectStart !== null) {
+      document.addEventListener('mousemove', handleMove)
+      document.addEventListener('mouseup', handleGlobalUp)
+      startAutoScroll()
+    }
+    return () => {
+      document.removeEventListener('mousemove', handleMove)
+      document.removeEventListener('mouseup', handleGlobalUp)
+    }
+  }, [selectStart, startAutoScroll, stopAutoScroll, handleMouseUp])
 
   // Helper: insert bases at current cursor/selection, cleaning input to valid DNA
   const insertBasesAtCursor = useCallback((bases: string) => {
@@ -363,6 +520,60 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
       useEditorStore.getState().setCursorPosition(cursor! + clean.length)
     }
   }, [])
+
+  // Find the first feature covering a given base position
+  const featureAtPosition = useCallback(
+    (pos: number): Feature | undefined => {
+      if (!sequence) return undefined
+      return sequence.features.find((f) => {
+        if (f.start <= f.end) return pos >= f.start && pos <= f.end
+        return pos >= f.start || pos <= f.end // wraparound
+      })
+    },
+    [sequence],
+  )
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent, idx: number) => {
+      if (isReadOnly) return
+      const feature = featureAtPosition(idx)
+      if (!feature) return
+      e.preventDefault()
+      setContextMenu({ x: e.clientX, y: e.clientY, feature })
+    },
+    [isReadOnly, featureAtPosition],
+  )
+
+  // Close context menu on click outside or Escape
+  useEffect(() => {
+    if (!contextMenu) return
+    const handleClose = () => setContextMenu(null)
+    const handleEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') setContextMenu(null) }
+    window.addEventListener('click', handleClose)
+    window.addEventListener('keydown', handleEsc)
+    window.addEventListener('scroll', handleClose, true)
+    return () => {
+      window.removeEventListener('click', handleClose)
+      window.removeEventListener('keydown', handleEsc)
+      window.removeEventListener('scroll', handleClose, true)
+    }
+  }, [contextMenu])
+
+  // Clear selection when clicking on empty background areas outside the sequence view
+  // Don't clear when clicking buttons, dialogs, panels, or other interactive elements
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (!containerRef.current) return
+      if (containerRef.current.contains(e.target as Node)) return
+      const target = e.target as HTMLElement
+      // Don't clear selection when clicking interactive elements or UI panels
+      if (target.closest('button, [role="dialog"], [role="menu"], [data-radix-popper-content-wrapper], input, textarea, select, a, label')) return
+      if (target.closest('[class*="toolbar"], [class*="panel"], [class*="sidebar"], [class*="tab-bar"]')) return
+      setSelectedRange(null)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [setSelectedRange])
 
   // Keyboard handler for edit mode (disabled for read-only split panels)
   useEffect(() => {
@@ -503,9 +714,11 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
         editMode && !isReadOnly ? 'ring-2 ring-amber-500/50 ring-inset' : ''
       }`}
       onMouseUp={handleMouseUp}
+      onMouseMove={handleContainerMouseMove}
       onMouseLeave={() => {
-        handleMouseUp()
-        setHoveredIndex(null)
+        if (!isSelecting.current) {
+          setHoveredIndex(null)
+        }
       }}
     >
       {/* Edit mode banner */}
@@ -559,7 +772,35 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
               return false
             })()
             return (
-            <div key={row.startIndex} className="font-mono" style={{ marginTop: extraMargin, marginBottom: hasTranslation ? fontSize * 0.85 : undefined }}>
+            <div key={row.startIndex} className="font-mono" style={{ marginTop: extraMargin, marginBottom: fontSize * 0.5 }}>
+              {/* Translation row — amino acids above the sense strand */}
+              {hasTranslation && (
+                <div className="flex">
+                  <span className="shrink-0" style={{ width: GUTTER_WIDTH }} />
+                  <div className="flex" style={{ fontSize, lineHeight: 1.2 }}>
+                    {row.bases.split('').map((_base, j) => {
+                      const idx = row.startIndex + j
+                      const td = translationData.get(idx)
+                      if (td) {
+                        return (
+                          <span
+                            key={idx}
+                            className="inline-flex items-center justify-center"
+                            style={{ width: '1ch' }}
+                            title={td.amino === '*' ? 'Stop codon' : td.amino}
+                          >
+                            <span className="font-bold" style={{ fontSize: fontSize * 0.75, color: td.color }}>
+                              {td.amino}
+                            </span>
+                          </span>
+                        )
+                      }
+                      return <span key={idx} style={{ width: '1ch' }}>{'\u00A0'}</span>
+                    })}
+                  </div>
+                </div>
+              )}
+              {/* Sense strand (5' → 3') */}
               <div className="flex">
               <span
                 className="shrink-0 text-right text-[#9c9690] select-none"
@@ -590,10 +831,11 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
                   return (
                     <span
                       key={idx}
+                      data-base-idx={idx}
                       onMouseDown={() => handleMouseDown(idx)}
-                      onMouseEnter={() => handleMouseEnter(idx)}
+                      onContextMenu={(e) => handleContextMenu(e, idx)}
                       className={`relative cursor-text ${isCursor ? 'cyw-cursor' : ''}`}
-                      title={siteStartList ? siteStartList.map((s) => s.enzyme).join(', ') : undefined}
+                      title={[baseFeatureNames[idx], siteStartList?.map((s) => s.enzyme).join(', ')].filter(Boolean).join(' · ') || undefined}
                       style={{
                         backgroundColor: bgColor,
                         color: featureColor || '#1a1a1a',
@@ -624,119 +866,241 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
                           {s.enzyme}
                         </span>
                       ))}
-                      {/* Cut marker */}
-                      {cutInfo && (
-                        <>
-                          {cutInfo.overhang === 'blunt' ? (
-                            /* Blunt: full-height thin line */
-                            <span
-                              className="pointer-events-none absolute"
-                              style={{
-                                left: -1,
-                                top: -2,
-                                width: 1.5,
-                                height: 'calc(100% + 4px)',
-                                backgroundColor: ENZYME_COLORS[cutInfo.colorIdx % ENZYME_COLORS.length].cut,
-                                borderRadius: 0.5,
-                              }}
-                            />
-                          ) : cutInfo.side === 'sense' ? (
-                            /* Sense strand cut: top half */
-                            <span
-                              className="pointer-events-none absolute"
-                              style={{
-                                left: -1,
-                                top: -2,
-                                width: 1.5,
-                                height: '55%',
-                                backgroundColor: ENZYME_COLORS[cutInfo.colorIdx % ENZYME_COLORS.length].cut,
-                                borderRadius: '0.5px 0.5px 0 0',
-                              }}
-                            />
-                          ) : (
-                            /* Anti-sense strand cut: bottom half */
-                            <span
-                              className="pointer-events-none absolute"
-                              style={{
-                                left: -1,
-                                bottom: -2,
-                                width: 1.5,
-                                height: '55%',
-                                backgroundColor: ENZYME_COLORS[cutInfo.colorIdx % ENZYME_COLORS.length].cut,
-                                borderRadius: '0 0 0.5px 0.5px',
-                              }}
-                            />
-                          )}
-                        </>
+                      {/* Cut marker — sense strand cuts only */}
+                      {cutInfo && (cutInfo.side === 'sense' || cutInfo.overhang === 'blunt') && (
+                        <span
+                          className="pointer-events-none absolute"
+                          style={{
+                            left: -1,
+                            top: -2,
+                            width: 1.5,
+                            height: '55%',
+                            backgroundColor: ENZYME_COLORS[cutInfo.colorIdx % ENZYME_COLORS.length].cut,
+                            borderRadius: '0.5px 0.5px 0 0',
+                          }}
+                        />
                       )}
                     </span>
                   )
                 })}
               </div>
               </div>
-              {/* Translation row — amino acid centered on the 2nd base of each codon.
-                   The outer div keeps fontSize equal to the sequence row so that each
-                   cell spans exactly 1ch (one monospace character width). The amino
-                   acid letter itself is scaled down via an inner span. */}
-              {hasTranslation && (
-                <div className="flex">
-                  <span className="shrink-0" style={{ width: GUTTER_WIDTH }} />
-                  <div className="flex" style={{ fontSize, lineHeight: 1.2 }}>
-                    {row.bases.split('').map((_base, j) => {
-                      const idx = row.startIndex + j
-                      const td = translationData.get(idx)
-                      if (td) {
-                        return (
+              {/* Complement strand (3' → 5') */}
+              <div className="flex" style={{ lineHeight: 1.3 }}>
+                <span
+                  className="shrink-0 text-right select-none"
+                  style={{ width: GUTTER_WIDTH, paddingRight: 12, color: '#c4c0ba', fontSize: fontSize * 0.85 }}
+                />
+                <div className="flex flex-wrap">
+                  {row.bases.split('').map((base, j) => {
+                    const idx = row.startIndex + j
+                    const compBase = COMPLEMENT[base.toUpperCase()] ?? 'N'
+                    const sel = isSelected(idx)
+                    const featureColor = baseColors[idx]
+                    const posColorIdx = restrictionData.positionColorIdx.get(idx)
+                    const isRestriction = posColorIdx !== undefined
+                    const enzymeColor = isRestriction
+                      ? ENZYME_COLORS[posColorIdx % ENZYME_COLORS.length]
+                      : undefined
+                    const cutInfo = restrictionData.cutPositions.get(idx)
+                    const showCut = cutInfo && (cutInfo.side === 'anti' || cutInfo.overhang === 'blunt')
+                    const bgColor = sel
+                      ? '#3b82f650'
+                      : featureColor
+                        ? `${featureColor}18`
+                        : undefined
+                    return (
+                      <span
+                        key={idx}
+                        data-base-idx={idx}
+                        onMouseDown={() => handleMouseDown(idx)}
+                        className="relative cursor-text"
+                        style={{
+                          backgroundColor: bgColor,
+                          color: featureColor ? `${featureColor}90` : '#9c9690',
+                          fontWeight: isRestriction ? 600 : undefined,
+                          borderTop: enzymeColor ? `1px solid ${enzymeColor.border}60` : undefined,
+                          borderBottom: enzymeColor ? `2px solid ${enzymeColor.border}` : undefined,
+                          paddingBottom: isRestriction ? 1 : undefined,
+                        }}
+                      >
+                        {compBase}
+                        {/* Cut marker — anti-sense strand cuts only */}
+                        {showCut && (
                           <span
-                            key={idx}
-                            className="inline-flex items-center justify-center"
-                            style={{ width: '1ch' }}
-                            title={td.amino === '*' ? 'Stop codon' : td.amino}
-                          >
-                            <span className="font-bold" style={{ fontSize: fontSize * 0.75, color: td.color }}>
-                              {td.amino}
-                            </span>
-                          </span>
-                        )
-                      }
-                      return <span key={idx} style={{ width: '1ch' }}>{'\u00A0'}</span>
-                    })}
-                  </div>
+                            className="pointer-events-none absolute"
+                            style={{
+                              left: -1,
+                              bottom: -2,
+                              width: 1.5,
+                              height: '55%',
+                              backgroundColor: ENZYME_COLORS[cutInfo!.colorIdx % ENZYME_COLORS.length].cut,
+                              borderRadius: '0 0 0.5px 0.5px',
+                            }}
+                          />
+                        )}
+                      </span>
+                    )
+                  })}
                 </div>
-              )}
+              </div>
             </div>
             )
           })}
         </div>
       )}
 
-      {/* Bottom bar: position indicator + zoom controls */}
+      {/* Feature context menu (right-click in edit mode) */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 min-w-[10rem] overflow-hidden rounded-md border border-[#e8e5df] bg-[#faf9f5] p-1 shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-[#9c9690]">
+            {contextMenu.feature.name}
+          </div>
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-[#1a1a1a] hover:bg-[#eae7e1]"
+            onClick={() => {
+              setSelectedRange({
+                start: contextMenu.feature.start,
+                end: contextMenu.feature.end,
+                wrapsAround: contextMenu.feature.start > contextMenu.feature.end,
+              })
+              setContextMenu(null)
+            }}
+          >
+            <MousePointer className="h-3.5 w-3.5 text-[#9c9690]" />
+            Select
+          </button>
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-[#1a1a1a] hover:bg-[#eae7e1]"
+            onClick={() => {
+              setRenameFeature(contextMenu.feature)
+              setContextMenu(null)
+            }}
+          >
+            <Pencil className="h-3.5 w-3.5 text-[#9c9690]" />
+            Rename
+          </button>
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-red-600 hover:bg-red-50"
+            onClick={() => {
+              removeFeature(contextMenu.feature.id)
+              setContextMenu(null)
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
+          </button>
+        </div>
+      )}
+
+      {/* Rename feature dialog */}
+      <RenameFeatureDialog feature={renameFeature} onClose={() => setRenameFeature(null)} />
+
+      {/* Bottom bar: position indicator + controls */}
       <div className="sticky bottom-0 left-0 z-10 mt-2 flex items-end justify-between">
-        {/* Position indicator */}
-        {hoveredIndex !== null && hoveredBase ? (
-          <div className="pointer-events-none inline-flex items-center gap-3 rounded bg-[#1a1a1a]/80 px-3 py-1 font-mono text-xs text-white backdrop-blur-sm">
-            <span>
-              Position: <span className="text-emerald-400">{hoveredIndex + 1}</span>
-            </span>
-            <span>
-              Base: <span className="text-sky-400">{hoveredBase.toUpperCase()}</span>
-            </span>
-            <span>
-              Complement: <span className="text-amber-400">{hoveredComplement}</span>
+        {/* Position / Selection indicator */}
+        {(() => {
+          // Compute active selection range: in-progress drag takes priority over committed range
+          const activeRange = (selectStart !== null && selectEnd !== null && selectStart !== selectEnd)
+            ? { start: Math.min(selectStart, selectEnd), end: Math.max(selectStart, selectEnd), wrapsAround: false }
+            : selectedRange
+          const hasHover = hoveredIndex !== null && hoveredBase
+          if (!activeRange && !hasHover) return <div />
+          return (
+            <div className="pointer-events-none inline-flex items-center gap-3 rounded bg-[#1a1a1a]/80 px-3 py-1 font-mono text-xs text-white backdrop-blur-sm">
+              {hasHover && (
+                <>
+                  <span>
+                    Position: <span className="text-emerald-400">{hoveredIndex! + 1}</span>
+                  </span>
+                  <span>
+                    Base: <span className="text-sky-400">{hoveredBase!.toUpperCase()}</span>
+                  </span>
+                  <span>
+                    Complement: <span className="text-amber-400">{hoveredComplement}</span>
+                  </span>
+                </>
+              )}
+              {activeRange && (() => {
+                const selLen = activeRange.wrapsAround
+                  ? sequence.length - activeRange.start + activeRange.end + 1
+                  : activeRange.end - activeRange.start + 1
+                return (
+                  <>
+                    {hasHover && <span className="text-[#9c9690]">|</span>}
+                    <span>
+                      Selection: <span className="text-emerald-400">{activeRange.start + 1}</span>
+                      <span className="text-[#9c9690]"> — </span>
+                      <span className="text-emerald-400">{activeRange.end + 1}</span>
+                    </span>
+                    <span>
+                      Length: <span className="text-sky-400">{selLen} bp</span>
+                    </span>
+                  </>
+                )
+              })()}
+            </div>
+          )
+        })()}
+        {/* Topology toggle + Zoom slider */}
+        <div className="flex flex-col items-end gap-1">
+          {/* Circular / Linear topology toggle */}
+          <button
+            onClick={() => {
+              const store = useSequenceStore.getState()
+              store.toggleCircular()
+              // If switching to linear while in circular view, fall back to linear view
+              if (store.sequence?.isCircular === false) {
+                const editorState = useEditorStore.getState()
+                if (editorState.viewMode === 'circular') {
+                  editorState.setViewMode('linear')
+                }
+              }
+            }}
+            title={sequence.isCircular ? 'Topology: Circular — click to make Linear' : 'Topology: Linear — click to make Circular'}
+            className="flex items-center gap-1.5 rounded-md border border-[#e8e5df] bg-white/90 px-2 py-1 text-[10px] font-medium text-[#6b6560] shadow-sm backdrop-blur-sm transition-colors hover:bg-[#f5f3ee]"
+          >
+            {sequence.isCircular ? (
+              <>
+                <Circle className="h-3 w-3" />
+                <span>Circular</span>
+              </>
+            ) : (
+              <>
+                <LinearIcon className="h-3 w-3" />
+                <span>Linear</span>
+              </>
+            )}
+          </button>
+          {/* Zoom controls — horizontal slider style */}
+          <div className="flex items-center gap-0.5 rounded-md border border-[#e8e5df] bg-white/90 px-1 py-0.5 shadow-sm backdrop-blur-sm">
+            <button onClick={seqZoomOut} title="Zoom Out (Ctrl+Scroll)" className="rounded p-1 text-[#6b6560] hover:bg-[#f5f3ee]">
+              <Minus className="h-3 w-3" />
+            </button>
+            <input
+              type="range"
+              min={zoom.minLevel * 100}
+              max={zoom.maxLevel * 100}
+              step={zoom.step * 100}
+              value={Math.round(zoom.level * 100)}
+              onChange={(e) => {
+                const newLevel = Number(e.target.value) / 100
+                seqZoomBy(newLevel - zoom.level)
+              }}
+              className="h-1 w-16 cursor-pointer appearance-none rounded-full bg-[#e8e5df] accent-[#6b6560] [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#6b6560]"
+              title={`Zoom: ${Math.round(zoom.level * 100)}%`}
+            />
+            <button onClick={seqZoomIn} title="Zoom In (Ctrl+Scroll)" className="rounded p-1 text-[#6b6560] hover:bg-[#f5f3ee]">
+              <Plus className="h-3 w-3" />
+            </button>
+            <span className="min-w-[28px] text-center font-mono text-[9px] text-[#9c9690]">
+              {Math.round(zoom.level * 100)}%
             </span>
           </div>
-        ) : <div />}
-        {/* Zoom controls */}
-        <div className="flex items-center gap-1 rounded-md border border-[#e8e5df] bg-white/90 px-1 py-0.5 shadow-sm backdrop-blur-sm">
-          <button onClick={seqZoomOut} title="Zoom Out (Ctrl+Scroll)" className="rounded p-1 text-[#6b6560] hover:bg-[#f5f3ee]">
-            <ZoomOut className="h-3.5 w-3.5" />
-          </button>
-          <span className="min-w-[32px] text-center font-mono text-[9px] text-[#9c9690]">
-            {Math.round(zoom.level * 100)}%
-          </span>
-          <button onClick={seqZoomIn} title="Zoom In (Ctrl+Scroll)" className="rounded p-1 text-[#6b6560] hover:bg-[#f5f3ee]">
-            <ZoomIn className="h-3.5 w-3.5" />
-          </button>
         </div>
       </div>
     </div>

@@ -21,6 +21,7 @@ export function SequenceTabBar() {
         {tabs.map((tab) => (
           <div
             key={tab.id}
+            title={tab.name}
             className={`group flex shrink-0 items-center gap-1 border-r border-[#e8e5df] px-3 py-1.5 text-xs ${
               tab.id === activeTabId
                 ? 'bg-[#faf9f5] text-[#1a1a1a]'
@@ -30,6 +31,7 @@ export function SequenceTabBar() {
             <button
               onClick={() => setActiveTab(tab.id)}
               className="max-w-[120px] truncate"
+              title={tab.name}
             >
               {tab.name}
             </button>

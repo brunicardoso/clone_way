@@ -16,12 +16,23 @@ import type { FeatureType } from '@/types'
 const FEATURE_TYPES: FeatureType[] = [
   'CDS',
   'gene',
+  'exon',
+  'intron',
+  'mRNA',
   'promoter',
   'terminator',
   'rep_origin',
   'primer_bind',
   'regulatory',
   'protein_bind',
+  "5'UTR",
+  "3'UTR",
+  'sig_peptide',
+  'mat_peptide',
+  'misc_RNA',
+  'ncRNA',
+  'rRNA',
+  'tRNA',
   'misc_feature',
 ]
 

@@ -41,7 +41,71 @@ export function importSnapGeneFile(filename: string, buffer: ArrayBuffer): Seque
 const KNOWN_FEATURE_TYPES = new Set<string>([
   'CDS', 'promoter', 'terminator', 'gene', 'rep_origin',
   'misc_feature', 'primer_bind', 'regulatory', 'protein_bind',
+  'exon', 'intron', 'mRNA', "5'UTR", "3'UTR",
+  'sig_peptide', 'mat_peptide', 'misc_RNA', 'ncRNA', 'rRNA', 'tRNA',
 ])
+
+/**
+ * Deduplicate redundant RefSeq features.
+ *
+ * RefSeq GenBank files annotate the same gene with many overlapping feature
+ * types at different coordinates — all sharing the same /gene qualifier:
+ *   - `gene`         — spans the entire locus
+ *   - `mRNA`         — spans the transcript
+ *   - `CDS`          — coding region
+ *   - `exon`         — individual exon segments
+ *   - `mat_peptide`  — mature peptide sub-regions of CDS
+ *   - `sig_peptide`  — signal peptide sub-region of CDS
+ *   - `misc_feature` — tiny functional-site annotations (3 bp active sites etc.)
+ *
+ * When a CDS exists for a gene name, we keep the CDS and drop all redundant
+ * annotations that are sub-features or parent wrappers of that CDS. Only
+ * structurally distinct features (regulatory, promoter, terminator, etc.) are
+ * preserved alongside the CDS.
+ */
+
+/** Feature types that provide independent structural information worth keeping
+ *  even when a CDS exists for the same gene name. */
+const KEEP_ALONGSIDE_CDS = new Set<FeatureType>([
+  'CDS', 'promoter', 'terminator', 'rep_origin', 'primer_bind',
+  'regulatory', 'protein_bind', "5'UTR", "3'UTR",
+  'misc_RNA', 'ncRNA', 'rRNA', 'tRNA', 'intron',
+])
+
+function deduplicateFeatures(features: Feature[]): Feature[] {
+  // Group features by name
+  const byName = new Map<string, Feature[]>()
+  for (const f of features) {
+    const group = byName.get(f.name)
+    if (group) {
+      group.push(f)
+    } else {
+      byName.set(f.name, [f])
+    }
+  }
+
+  const removed = new Set<string>()
+  for (const group of byName.values()) {
+    if (group.length < 2) continue
+    const types = new Set(group.map((f) => f.type))
+
+    if (types.has('CDS')) {
+      // CDS exists — drop everything that isn't structurally independent
+      for (const f of group) {
+        if (!KEEP_ALONGSIDE_CDS.has(f.type)) {
+          removed.add(f.id)
+        }
+      }
+    } else if (types.has('mRNA')) {
+      // No CDS — keep mRNA, drop gene wrapper
+      for (const f of group) {
+        if (f.type === 'gene') removed.add(f.id)
+      }
+    }
+  }
+
+  return features.filter((f) => !removed.has(f.id))
+}
 
 /** Import a file and convert it to a Sequence. */
 export function importFile(
@@ -84,6 +148,8 @@ export function importFile(
           }
         })
 
+      const dedupedFeatures = deduplicateFeatures(features)
+
       return {
         id: uuidv4(),
         name: record.locus.split(/\s+/)[0] || filename,
@@ -91,7 +157,7 @@ export function importFile(
         bases: record.sequence,
         isCircular: record.isCircular,
         length: record.sequence.length,
-        features,
+        features: dedupedFeatures,
         restrictionSites: [],
         orfs: [],
         annotations: record.comments.map((c, i) => ({

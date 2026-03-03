@@ -6,17 +6,29 @@ import { useEditorStore } from '@/stores/useEditorStore'
 import { useFeatureLibraryStore } from '@/stores/useFeatureLibraryStore'
 import { Badge } from '@/components/ui/Badge'
 import { COLOR_PALETTES } from '@/lib/theme'
-import { X, BookOpen, Save } from 'lucide-react'
+import { X, BookOpen, Save, MousePointer, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from '@/components/ui/DropdownMenu'
+import { RenameFeatureDialog } from './RenameFeatureDialog'
 import { FeatureLibraryPanel } from './FeatureLibraryPanel'
+import type { Feature } from '@/types'
 
 export function FeaturePanel() {
   const sequence = useSequenceStore((s) => s.sequence)
   const featurePanelOpen = useEditorStore((s) => s.featurePanelOpen)
   const toggleFeaturePanel = useEditorStore((s) => s.toggleFeaturePanel)
   const colorPalette = useEditorStore((s) => s.colorPalette)
+  const removeFeature = useSequenceStore((s) => s.removeFeature)
+  const setSelectedRange = useEditorStore((s) => s.setSelectedRange)
   const addFeatureToLibrary = useFeatureLibraryStore((s) => s.addFeature)
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [renameFeature, setRenameFeature] = useState<Feature | null>(null)
 
   if (!featurePanelOpen) return null
   if (!sequence || sequence.features.length === 0) return null
@@ -70,36 +82,66 @@ export function FeaturePanel() {
         ) : (
           <ul className="space-y-1">
             {sequence.features.map((f) => (
-              <li
-                key={f.id}
-                className="group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-[#eae7e1]"
-              >
-                <span
-                  className="h-2.5 w-2.5 shrink-0 rounded-full"
-                  style={{
-                    backgroundColor:
-                      f.color ?? COLOR_PALETTES[colorPalette][f.type] ?? '#666',
-                  }}
-                />
-                <span className="flex-1 truncate text-[#1a1a1a]">
-                  {f.name}
-                </span>
-                <Badge variant="outline">{f.type}</Badge>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-5 w-5 opacity-0 group-hover:opacity-100"
-                  onClick={() => handleSaveToLibrary(f)}
-                  title="Save to Library"
-                >
-                  <Save className="h-3 w-3" />
-                </Button>
-              </li>
+              <DropdownMenu key={f.id}>
+                <DropdownMenuTrigger asChild>
+                  <li
+                    className="group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-[#eae7e1]"
+                  >
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{
+                        backgroundColor:
+                          f.color ?? COLOR_PALETTES[colorPalette][f.type] ?? '#666',
+                      }}
+                    />
+                    <span className="flex-1 truncate text-[#1a1a1a]">
+                      {f.name}
+                    </span>
+                    <Badge variant="outline">{f.type}</Badge>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 opacity-0 group-hover:opacity-100"
+                      onClick={(e) => { e.stopPropagation(); handleSaveToLibrary(f) }}
+                      title="Save to Library"
+                    >
+                      <Save className="h-3 w-3" />
+                    </Button>
+                  </li>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      setSelectedRange({
+                        start: f.start,
+                        end: f.end,
+                        wrapsAround: f.start > f.end,
+                      })
+                    }
+                  >
+                    <MousePointer className="mr-2 h-3.5 w-3.5 text-[#9c9690]" />
+                    Select
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setRenameFeature(f)}>
+                    <Pencil className="mr-2 h-3.5 w-3.5 text-[#9c9690]" />
+                    Rename
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator className="my-1 h-px bg-[#e8e5df]" />
+                  <DropdownMenuItem
+                    className="text-red-600 hover:bg-red-50 focus:bg-red-50"
+                    onSelect={() => removeFeature(f.id)}
+                  >
+                    <Trash2 className="mr-2 h-3.5 w-3.5" />
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             ))}
           </ul>
         )}
       </div>
       <FeatureLibraryPanel open={libraryOpen} onOpenChange={setLibraryOpen} />
+      <RenameFeatureDialog feature={renameFeature} onClose={() => setRenameFeature(null)} />
     </aside>
   )
 }

@@ -30,6 +30,7 @@ export const COMMANDS: Command[] = [
   { id: 'file-new', label: 'New Sequence', group: 'File', shortcut: 'Mod+N', action: 'new-sequence' },
   { id: 'file-import', label: 'Import File', group: 'File', shortcut: 'Mod+O', action: 'import' },
   { id: 'file-addgene', label: 'Fetch from Addgene', group: 'File', action: 'addgene-import' },
+  { id: 'file-ncbi', label: 'Fetch from NCBI', group: 'File', action: 'ncbi-import' },
   { id: 'file-export-gb', label: 'Export as GenBank', group: 'File', action: 'export:genbank' },
   { id: 'file-export-fasta', label: 'Export as FASTA', group: 'File', action: 'export:fasta' },
   { id: 'file-project-open', label: 'Open Project', group: 'File', action: 'project-open' },

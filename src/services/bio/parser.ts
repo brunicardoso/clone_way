@@ -352,6 +352,8 @@ function parseSnapGeneFeatures(xml: string): Feature[] {
   const KNOWN_TYPES = new Set<string>([
     'CDS', 'promoter', 'terminator', 'gene', 'rep_origin',
     'misc_feature', 'primer_bind', 'regulatory', 'protein_bind',
+    'exon', 'intron', 'mRNA', "5'UTR", "3'UTR",
+    'sig_peptide', 'mat_peptide', 'misc_RNA', 'ncRNA', 'rRNA', 'tRNA',
   ])
 
   // Match each <Feature ...>...</Feature> block

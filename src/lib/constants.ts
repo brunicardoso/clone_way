@@ -20,6 +20,17 @@ export const FEATURE_COLORS: Record<string, string> = {
   primer_bind: '#5BB5C5',
   regulatory: '#C4A84D',
   protein_bind: '#C75B8E',
+  exon: '#2E86C1',
+  intron: '#A0A0A0',
+  mRNA: '#27AE60',
+  "5'UTR": '#F39C12',
+  "3'UTR": '#E67E22',
+  sig_peptide: '#8E44AD',
+  mat_peptide: '#16A085',
+  misc_RNA: '#95A5A6',
+  ncRNA: '#D4AC0D',
+  rRNA: '#CB4335',
+  tRNA: '#6C3483',
 }
 
 /** Darken a hex color by a given amount (0–1). */

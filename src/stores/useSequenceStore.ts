@@ -12,10 +12,12 @@ interface SequenceState {
   updateSequenceBases: (bases: string) => void
   addFeature: (feature: Omit<Feature, 'id'>) => void
   removeFeature: (featureId: string) => void
+  updateFeature: (featureId: string, updates: Partial<Pick<Feature, 'name' | 'color' | 'type'>>) => void
   deleteRange: (start: number, end: number) => void
   insertBases: (position: number, bases: string) => void
   updateOrfs: (orfs: ORF[]) => void
   updateRestrictionSites: (sites: RestrictionSite[]) => void
+  toggleCircular: () => void
   commitChanges: () => void
   clear: () => void
 }
@@ -55,6 +57,16 @@ export const useSequenceStore = create<SequenceState>()(
             state.sequence.features = state.sequence.features.filter(
               (f) => f.id !== featureId,
             )
+            state.isDirty = true
+          }
+        }),
+
+      updateFeature: (featureId, updates) =>
+        set((state) => {
+          if (!state.sequence) return
+          const f = state.sequence.features.find((f) => f.id === featureId)
+          if (f) {
+            Object.assign(f, updates)
             state.isDirty = true
           }
         }),
@@ -138,6 +150,14 @@ export const useSequenceStore = create<SequenceState>()(
         set((state) => {
           if (state.sequence) {
             state.sequence.restrictionSites = sites
+          }
+        }),
+
+      toggleCircular: () =>
+        set((state) => {
+          if (state.sequence) {
+            state.sequence.isCircular = !state.sequence.isCircular
+            state.isDirty = true
           }
         }),
 

@@ -7,6 +7,8 @@ import { useEditorStore } from '@/stores/useEditorStore'
 import { findORFs } from '@/services/bio/orf'
 import { findAllRestrictionSites } from '@/services/bio/enzymes'
 import { useAppStore } from '@/stores/useAppStore'
+import { useProjectStore } from '@/stores/useProjectStore'
+import { useTabStore } from '@/stores/useTabStore'
 
 export function useCommandDispatch() {
   const router = useRouter()
@@ -126,6 +128,10 @@ export function useCommandDispatch() {
           window.dispatchEvent(new CustomEvent('cyw:trigger-addgene'))
           break
 
+        case 'ncbi-import':
+          window.dispatchEvent(new CustomEvent('cyw:trigger-ncbi'))
+          break
+
         case 'feature-library':
           window.dispatchEvent(new CustomEvent('cyw:trigger-feature-library'))
           break
@@ -155,10 +161,16 @@ export function useCommandDispatch() {
           break
 
         case 'save': {
-          const seq = useSequenceStore.getState().sequence
           useSequenceStore.getState().commitChanges()
+          useTabStore.getState().syncActiveSequence()
+          const seq = useSequenceStore.getState().sequence
           if (seq) {
             useAppStore.getState().addRecentSequence(seq)
+          }
+          if (useProjectStore.getState().isOpen) {
+            if (seq) useProjectStore.getState().saveSequence(seq)
+          } else {
+            window.dispatchEvent(new CustomEvent('cyw:trigger-export'))
           }
           break
         }

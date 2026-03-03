@@ -171,7 +171,12 @@ export default function EditorPage() {
                       <SequenceView />
                     </>
                   )}
-                  {viewMode === 'circular' && <CircularMap />}
+                  {viewMode === 'circular' && sequence.isCircular && <CircularMap />}
+                  {viewMode === 'circular' && !sequence.isCircular && (
+                    <div className="flex flex-1 items-center justify-center text-[#9c9690]">
+                      <p>Circular view is only available for circular sequences. Convert your sequence to circular first.</p>
+                    </div>
+                  )}
                   {viewMode === 'sequence' && <SequenceView />}
                 </>
               )}
