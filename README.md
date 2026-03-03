@@ -83,3 +83,9 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 ## License
 
 This project is licensed under the MIT License - see the [license.md](license.md) file for details.
+
+## Citation
+
+If you use CloneWay in your research, please cite:
+
+Bruni-Cardoso A., 2026. CloneWay - An open-source, GUI-first molecular biology suite for sequence design, analysis, and cloning planning. https://doi.org/10.5281/zenodo.18851838
