@@ -1,6 +1,10 @@
 # CloneWay (CYW) - Molecular Biology Suite
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18851838.svg)](https://doi.org/10.5281/zenodo.18851838)
+
 An open-source, GUI-first molecular biology suite for sequence design, analysis, and cloning planning. All data stays in your browser — no accounts, no telemetry, no uploads.
+
+**[Try CloneWay Online](https://clone-way.vercel.app/editor)**
 
 ## Features
 
