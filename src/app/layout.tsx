@@ -5,6 +5,7 @@ import { MagicBarProvider } from '@/components/magic-bar/MagicBarProvider'
 import { MagicBar } from '@/components/magic-bar/MagicBar'
 import { AppShell } from '@/components/layout/AppShell'
 import { KeyboardShortcutHandler } from './KeyboardShortcutHandler'
+import { Analytics } from '@vercel/analytics/react'
 
 const inter = Inter({
   variable: '--font-inter',
@@ -39,7 +40,9 @@ export default function RootLayout({
           <MagicBar />
           <AppShell>{children}</AppShell>
         </MagicBarProvider>
+        <Analytics />
       </body>
     </html>
   )
 }
+
