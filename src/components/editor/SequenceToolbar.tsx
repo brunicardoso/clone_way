@@ -380,7 +380,7 @@ export function SequenceToolbar() {
         </Button>
       </div>
 
-      {/* Mobile bottom toolbar — 5 buttons max */}
+      {/* Mobile bottom toolbar */}
       <div className="fixed bottom-0 left-0 right-0 z-30 flex items-center justify-around border-t border-[#e8e5df] bg-[#f5f3ee]/95 px-2 py-1.5 backdrop-blur-sm md:hidden" style={{ paddingBottom: 'max(6px, env(safe-area-inset-bottom))' }}>
         <Button variant="ghost" size="icon" title="Import" onClick={() => { setImportInitialTab('file'); setImportOpen(true) }} className="h-11 w-11">
           <Upload className="h-5 w-5" />
@@ -400,7 +400,6 @@ export function SequenceToolbar() {
               onClick={() => {
                 const isCircularDisabled = nextMode.mode === 'circular' && sequence && !sequence.isCircular
                 if (isCircularDisabled) {
-                  // Skip circular and go to the next one
                   const skipIdx = (nextIdx + 1) % viewModes.length
                   setViewMode(viewModes[skipIdx].mode)
                 } else {
@@ -417,7 +416,7 @@ export function SequenceToolbar() {
         <Button variant="ghost" size="icon" title="Find ORFs" onClick={handleFindOrfs} disabled={!hasSequence} className="h-11 w-11">
           <Dna className="h-5 w-5" />
         </Button>
-        <Button variant="ghost" size="icon" title="All Commands" onClick={() => window.dispatchEvent(new CustomEvent('cyw:trigger-magic-bar'))} className="h-11 w-11">
+        <Button variant="ghost" size="icon" title="Find Sequence" onClick={() => window.dispatchEvent(new CustomEvent('cyw:trigger-find'))} disabled={!hasSequence} className="h-11 w-11">
           <SearchCode className="h-5 w-5" />
         </Button>
       </div>
