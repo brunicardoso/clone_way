@@ -14,6 +14,7 @@ const MIN_FONT_SIZE = 8
 const MAX_FONT_SIZE = 48
 const BASE_CHARS_PER_ROW = 60
 const GUTTER_WIDTH = 64
+const MOBILE_GUTTER_WIDTH = 40
 
 const COMPLEMENT: Record<string, string> = {
   A: 'T', T: 'A', G: 'C', C: 'G', N: 'N',
@@ -68,6 +69,7 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
   const setCursorPosition = useEditorStore((s) => s.setCursorPosition)
 
   const containerRef = useRef<HTMLDivElement>(null)
+  const [containerWidth, setContainerWidth] = useState(0)
   const [selectStart, setSelectStart] = useState<number | null>(null)
   const [selectEnd, setSelectEnd] = useState<number | null>(null)
   const isSelecting = useRef(false)
@@ -95,14 +97,36 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
     return () => el.removeEventListener('wheel', handler)
   }, [seqZoomBy, zoom.step])
 
+  // Track container width for responsive layout
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width)
+      }
+    })
+    ro.observe(el)
+    setContainerWidth(el.clientWidth)
+    return () => ro.disconnect()
+  }, [])
+
+  const isMobile = containerWidth > 0 && containerWidth < 600
+  const gutterWidth = isMobile ? MOBILE_GUTTER_WIDTH : GUTTER_WIDTH
+
   const fontSize = Math.max(
     MIN_FONT_SIZE,
     Math.min(MAX_FONT_SIZE, Math.round(BASE_FONT_SIZE * zoom.level)),
   )
-  const charsPerRow = Math.max(
-    10,
-    Math.min(120, Math.round(BASE_CHARS_PER_ROW / zoom.level)),
-  )
+  // On mobile, compute chars per row based on available width
+  const charsPerRow = useMemo(() => {
+    if (isMobile && containerWidth > 0) {
+      const charWidth = fontSize * 0.6
+      const availableWidth = containerWidth - gutterWidth - 8 // 8px for padding on mobile
+      return Math.max(10, Math.floor(availableWidth / charWidth))
+    }
+    return Math.max(10, Math.min(120, Math.round(BASE_CHARS_PER_ROW / zoom.level)))
+  }, [isMobile, containerWidth, gutterWidth, fontSize, zoom.level])
 
   // Pre-compute color for each base position from features
   const baseColors = useMemo(() => {
@@ -382,7 +406,7 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
       if (scrollDelta !== 0) {
         container.scrollTop += scrollDelta
         // After scrolling, find the element under the mouse and update selection
-        const el = document.elementFromPoint(lastMouseY.current > rect.bottom ? rect.left + GUTTER_WIDTH + 20 : rect.left + GUTTER_WIDTH + 20, Math.min(Math.max(y, rect.top + 4), rect.bottom - 4))
+        const el = document.elementFromPoint(lastMouseY.current > rect.bottom ? rect.left + gutterWidth + 20 : rect.left + gutterWidth + 20, Math.min(Math.max(y, rect.top + 4), rect.bottom - 4))
         if (el instanceof HTMLElement) {
           const baseEl = el.closest('[data-base-idx]') as HTMLElement | null
           if (baseEl) {
@@ -395,7 +419,7 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
         }
       }
     }, 30) // ~33fps for auto-scroll
-  }, [stopAutoScroll])
+  }, [stopAutoScroll, gutterWidth])
 
   // Clean up on unmount
   useEffect(() => {
@@ -478,6 +502,48 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
       selectEndRef.current = null
     }
   }, [selectStart, setSelectedRange, editMode, setCursorPosition, stopAutoScroll])
+
+  // Touch event handlers for mobile selection
+  const handleTouchStart = useCallback(
+    (e: React.TouchEvent) => {
+      const touch = e.touches[0]
+      const el = document.elementFromPoint(touch.clientX, touch.clientY)
+      if (!el || !(el instanceof HTMLElement)) return
+      const baseEl = el.closest('[data-base-idx]') as HTMLElement | null
+      if (!baseEl) return
+      const idx = Number(baseEl.dataset.baseIdx)
+      if (isNaN(idx)) return
+      handleMouseDown(idx)
+    },
+    [handleMouseDown],
+  )
+
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      if (!isSelecting.current) return
+      e.preventDefault()
+      const touch = e.touches[0]
+      const el = document.elementFromPoint(touch.clientX, touch.clientY)
+      if (!el || !(el instanceof HTMLElement)) return
+      const baseEl = el.closest('[data-base-idx]') as HTMLElement | null
+      if (!baseEl) return
+      const idx = Number(baseEl.dataset.baseIdx)
+      if (!isNaN(idx) && idx !== selectEndRef.current) {
+        selectEndRef.current = idx
+        if (rafId.current === null) {
+          rafId.current = requestAnimationFrame(() => {
+            rafId.current = null
+            setSelectEnd(selectEndRef.current)
+          })
+        }
+      }
+    },
+    [],
+  )
+
+  const handleTouchEnd = useCallback(() => {
+    handleMouseUp()
+  }, [handleMouseUp])
 
   // Track mouse position for auto-scroll and handle mouseup outside container
   useEffect(() => {
@@ -710,11 +776,14 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
   return (
     <div
       ref={containerRef}
-      className={`relative flex-1 overflow-auto bg-white p-4 select-none ${
+      className={`relative flex-1 overflow-auto bg-white p-2 select-none sm:p-4 ${
         editMode && !isReadOnly ? 'ring-2 ring-amber-500/50 ring-inset' : ''
       }`}
       onMouseUp={handleMouseUp}
       onMouseMove={handleContainerMouseMove}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
       onMouseLeave={() => {
         if (!isSelecting.current) {
           setHoveredIndex(null)
@@ -776,8 +845,8 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
               {/* Translation row — amino acids above the sense strand */}
               {hasTranslation && (
                 <div className="flex">
-                  <span className="shrink-0" style={{ width: GUTTER_WIDTH }} />
-                  <div className="flex" style={{ fontSize, lineHeight: 1.2 }}>
+                  <span className="shrink-0" style={{ width: gutterWidth }} />
+                  <div className="flex flex-wrap" style={{ fontSize, lineHeight: 1.2 }}>
                     {row.bases.split('').map((_base, j) => {
                       const idx = row.startIndex + j
                       const td = translationData.get(idx)
@@ -786,7 +855,7 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
                           <span
                             key={idx}
                             className="inline-flex items-center justify-center"
-                            style={{ width: '1ch' }}
+                            style={{ width: `${fontSize * 0.6}px` }}
                             title={td.amino === '*' ? 'Stop codon' : td.amino}
                           >
                             <span className="font-bold" style={{ fontSize: fontSize * 0.75, color: td.color }}>
@@ -795,7 +864,7 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
                           </span>
                         )
                       }
-                      return <span key={idx} style={{ width: '1ch' }}>{'\u00A0'}</span>
+                      return <span key={idx} style={{ width: `${fontSize * 0.6}px` }}>{'\u00A0'}</span>
                     })}
                   </div>
                 </div>
@@ -804,7 +873,7 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
               <div className="flex">
               <span
                 className="shrink-0 text-right text-[#9c9690] select-none"
-                style={{ width: GUTTER_WIDTH, paddingRight: 12 }}
+                style={{ width: gutterWidth, paddingRight: isMobile ? 6 : 12 }}
               >
                 {row.startIndex + 1}
               </span>
@@ -834,9 +903,10 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
                       data-base-idx={idx}
                       onMouseDown={() => handleMouseDown(idx)}
                       onContextMenu={(e) => handleContextMenu(e, idx)}
-                      className={`relative cursor-text ${isCursor ? 'cyw-cursor' : ''}`}
+                      className={`relative cursor-text inline-flex items-center justify-center ${isCursor ? 'cyw-cursor' : ''}`}
                       title={[baseFeatureNames[idx], siteStartList?.map((s) => s.enzyme).join(', ')].filter(Boolean).join(' · ') || undefined}
                       style={{
+                        width: `${fontSize * 0.6}px`,
                         backgroundColor: bgColor,
                         color: featureColor || '#1a1a1a',
                         fontWeight: isRestriction ? 600 : undefined,
@@ -889,7 +959,7 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
               <div className="flex" style={{ lineHeight: 1.3 }}>
                 <span
                   className="shrink-0 text-right select-none"
-                  style={{ width: GUTTER_WIDTH, paddingRight: 12, color: '#c4c0ba', fontSize: fontSize * 0.85 }}
+                  style={{ width: gutterWidth, paddingRight: isMobile ? 6 : 12, color: '#c4c0ba', fontSize: fontSize * 0.85 }}
                 />
                 <div className="flex flex-wrap">
                   {row.bases.split('').map((base, j) => {
@@ -914,8 +984,9 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
                         key={idx}
                         data-base-idx={idx}
                         onMouseDown={() => handleMouseDown(idx)}
-                        className="relative cursor-text"
+                        className="relative cursor-text inline-flex items-center justify-center"
                         style={{
+                          width: `${fontSize * 0.6}px`,
                           backgroundColor: bgColor,
                           color: featureColor ? `${featureColor}90` : '#9c9690',
                           fontWeight: isRestriction ? 600 : undefined,
@@ -1001,7 +1072,7 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
       <RenameFeatureDialog feature={renameFeature} onClose={() => setRenameFeature(null)} />
 
       {/* Bottom bar: position indicator + controls */}
-      <div className="sticky bottom-0 left-0 z-10 mt-2 flex items-end justify-between">
+      <div className="sticky bottom-0 left-0 z-10 mt-2 flex flex-col items-start gap-1 sm:flex-row sm:items-end sm:justify-between">
         {/* Position / Selection indicator */}
         {(() => {
           // Compute active selection range: in-progress drag takes priority over committed range
@@ -1011,7 +1082,7 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
           const hasHover = hoveredIndex !== null && hoveredBase
           if (!activeRange && !hasHover) return <div />
           return (
-            <div className="pointer-events-none inline-flex items-center gap-3 rounded bg-[#1a1a1a]/80 px-3 py-1 font-mono text-xs text-white backdrop-blur-sm">
+            <div className="pointer-events-none inline-flex flex-wrap items-center gap-1.5 rounded bg-[#1a1a1a]/80 px-2 py-1 font-mono text-[10px] text-white backdrop-blur-sm sm:gap-3 sm:px-3 sm:text-xs">
               {hasHover && (
                 <>
                   <span>

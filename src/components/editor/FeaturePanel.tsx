@@ -55,7 +55,7 @@ export function FeaturePanel() {
   }
 
   return (
-    <aside className="flex w-64 flex-col border-l border-[#e8e5df] bg-[#f5f3ee]">
+    <aside className="hidden w-64 flex-col border-l border-[#e8e5df] bg-[#f5f3ee] md:flex">
       <div className="flex items-center justify-between border-b border-[#e8e5df] px-3 py-2">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-[#9c9690]">
           Features

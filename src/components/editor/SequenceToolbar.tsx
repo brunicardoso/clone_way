@@ -237,7 +237,7 @@ export function SequenceToolbar() {
 
   return (
     <>
-      <div className="flex w-10 shrink-0 flex-col items-center gap-0.5 border-r border-[#e8e5df] bg-[#f5f3ee] py-2">
+      <div className="hidden w-10 shrink-0 flex-col items-center gap-0.5 border-r border-[#e8e5df] bg-[#f5f3ee] py-2 md:flex">
         {/* File operations */}
         <Button variant="ghost" size="icon" title="New Sequence" onClick={() => setNewSequenceOpen(true)} className="h-8 w-8">
           <FilePlus className="h-4 w-4" />
