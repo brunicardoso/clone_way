@@ -380,37 +380,44 @@ export function SequenceToolbar() {
         </Button>
       </div>
 
-      {/* Mobile bottom toolbar — essential actions only */}
-      <div className="fixed bottom-0 left-0 right-0 z-30 flex items-center justify-around border-t border-[#e8e5df] bg-[#f5f3ee]/95 px-1 py-1 backdrop-blur-sm md:hidden" style={{ paddingBottom: 'max(4px, env(safe-area-inset-bottom))' }}>
-        <Button variant="ghost" size="icon" title="New" onClick={() => setNewSequenceOpen(true)} className="h-10 w-10">
-          <FilePlus className="h-5 w-5" />
-        </Button>
-        <Button variant="ghost" size="icon" title="Import" onClick={() => { setImportInitialTab('file'); setImportOpen(true) }} className="h-10 w-10">
+      {/* Mobile bottom toolbar — 5 buttons max */}
+      <div className="fixed bottom-0 left-0 right-0 z-30 flex items-center justify-around border-t border-[#e8e5df] bg-[#f5f3ee]/95 px-2 py-1.5 backdrop-blur-sm md:hidden" style={{ paddingBottom: 'max(6px, env(safe-area-inset-bottom))' }}>
+        <Button variant="ghost" size="icon" title="Import" onClick={() => { setImportInitialTab('file'); setImportOpen(true) }} className="h-11 w-11">
           <Upload className="h-5 w-5" />
         </Button>
-        <Button variant="ghost" size="icon" title="Export" disabled={!hasSequence} onClick={() => setExportOpen(true)} className="h-10 w-10">
+        <Button variant="ghost" size="icon" title="Export" disabled={!hasSequence} onClick={() => setExportOpen(true)} className="h-11 w-11">
           <Download className="h-5 w-5" />
         </Button>
-        {viewModes.map(({ mode, icon: Icon, label }) => {
-          const isCircularDisabled = mode === 'circular' && sequence && !sequence.isCircular
+        {(() => {
+          const currentMode = viewModes.find(v => v.mode === viewMode) ?? viewModes[0]
+          const CurrentIcon = currentMode.icon
+          const nextIdx = (viewModes.findIndex(v => v.mode === viewMode) + 1) % viewModes.length
+          const nextMode = viewModes[nextIdx]
           return (
             <Button
-              key={mode}
-              variant={viewMode === mode ? 'default' : 'ghost'}
+              variant="default"
               size="icon"
-              onClick={() => !isCircularDisabled && setViewMode(mode)}
-              title={label}
-              disabled={!!isCircularDisabled}
-              className="h-10 w-10"
+              onClick={() => {
+                const isCircularDisabled = nextMode.mode === 'circular' && sequence && !sequence.isCircular
+                if (isCircularDisabled) {
+                  // Skip circular and go to the next one
+                  const skipIdx = (nextIdx + 1) % viewModes.length
+                  setViewMode(viewModes[skipIdx].mode)
+                } else {
+                  setViewMode(nextMode.mode)
+                }
+              }}
+              title={`View: ${currentMode.label}`}
+              className="h-11 w-11"
             >
-              <Icon className="h-5 w-5" />
+              <CurrentIcon className="h-5 w-5" />
             </Button>
           )
-        })}
-        <Button variant="ghost" size="icon" title="Find ORFs" onClick={handleFindOrfs} disabled={!hasSequence} className="h-10 w-10">
+        })()}
+        <Button variant="ghost" size="icon" title="Find ORFs" onClick={handleFindOrfs} disabled={!hasSequence} className="h-11 w-11">
           <Dna className="h-5 w-5" />
         </Button>
-        <Button variant="ghost" size="icon" title="More (Cmd+K)" onClick={() => window.dispatchEvent(new CustomEvent('cyw:trigger-magic-bar'))} className="h-10 w-10">
+        <Button variant="ghost" size="icon" title="All Commands" onClick={() => window.dispatchEvent(new CustomEvent('cyw:trigger-magic-bar'))} className="h-11 w-11">
           <SearchCode className="h-5 w-5" />
         </Button>
       </div>
