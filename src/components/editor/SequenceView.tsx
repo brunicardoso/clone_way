@@ -776,7 +776,7 @@ export function SequenceView({ sequence: sequenceProp }: SequenceViewProps = {})
   return (
     <div
       ref={containerRef}
-      className={`relative flex-1 overflow-auto bg-white p-2 select-none sm:p-4 ${
+      className={`relative flex-1 overflow-auto bg-white p-2 pb-16 select-none sm:p-4 md:pb-4 ${
         editMode && !isReadOnly ? 'ring-2 ring-amber-500/50 ring-inset' : ''
       }`}
       onMouseUp={handleMouseUp}
