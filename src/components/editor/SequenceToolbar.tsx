@@ -416,7 +416,7 @@ export function SequenceToolbar() {
         <Button variant="ghost" size="icon" title="Find ORFs" onClick={handleFindOrfs} disabled={!hasSequence} className="h-11 w-11">
           <Dna className="h-5 w-5" />
         </Button>
-        <Button variant="ghost" size="icon" title="Find Sequence" onClick={() => window.dispatchEvent(new CustomEvent('cyw:trigger-find'))} disabled={!hasSequence} className="h-11 w-11">
+        <Button variant="ghost" size="icon" title="All Commands" onClick={() => window.dispatchEvent(new CustomEvent('cyw:trigger-magic-bar'))} className="h-11 w-11">
           <SearchCode className="h-5 w-5" />
         </Button>
       </div>
