@@ -156,6 +156,10 @@ export function useCommandDispatch() {
           window.dispatchEvent(new CustomEvent('cyw:trigger-cloning'))
           break
 
+        case 'toggle-translation':
+          useEditorStore.getState().toggleTranslation()
+          break
+
         case 'find':
           window.dispatchEvent(new CustomEvent('cyw:trigger-find'))
           break

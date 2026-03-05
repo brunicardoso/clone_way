@@ -24,6 +24,7 @@ export const COMMANDS: Command[] = [
   { id: 'tool-gibson', label: 'Gibson Assembly', group: 'Sequence Tools', action: 'cloning' },
   { id: 'tool-golden-gate', label: 'Golden Gate Assembly', group: 'Sequence Tools', action: 'cloning' },
   { id: 'tool-mutagenesis', label: 'Site-Directed Mutagenesis', group: 'Sequence Tools', action: 'cloning' },
+  { id: 'tool-translation', label: 'Toggle Protein Translation', group: 'Sequence Tools', action: 'toggle-translation' },
   { id: 'tool-find', label: 'Find Sequence', group: 'Sequence Tools', shortcut: 'Mod+F', action: 'find' },
 
   // File
