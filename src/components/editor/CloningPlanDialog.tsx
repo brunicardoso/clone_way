@@ -97,7 +97,7 @@ export function CloningPlanDialog({ open, onOpenChange }: CloningPlanDialogProps
 
     const results: { name: string; recSeq: string; vectorCuts: number }[] = []
     for (const enzyme of COMMON_ENZYMES) {
-      const vSites = findRestrictionSites(sequence.bases, enzyme)
+      const vSites = findRestrictionSites(sequence.bases, enzyme, sequence.isCircular)
       if (vSites.length > 0) {
         results.push({
           name: enzyme.name,

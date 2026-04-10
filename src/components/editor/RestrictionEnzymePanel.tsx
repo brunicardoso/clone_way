@@ -19,6 +19,7 @@ export function RestrictionEnzymePanel({ onClose }: RestrictionEnzymePanelProps)
   const [search, setSearch] = useState('')
   const [selectedEnzyme, setSelectedEnzyme] = useState<string | null>(null)
   const [siteIndex, setSiteIndex] = useState(0)
+  const [filter, setFilter] = useState<'unique' | 'all'>('unique')
   const inputRef = useRef<HTMLInputElement>(null)
 
   const sequence = useSequenceStore((s) => s.sequence)
@@ -36,7 +37,7 @@ export function RestrictionEnzymePanel({ onClose }: RestrictionEnzymePanelProps)
     if (!sequence) return []
     const results: { name: string; recSeq: string; count: number; sites: RestrictionSite[] }[] = []
     for (const enzyme of COMMON_ENZYMES) {
-      const sites = findRestrictionSites(sequence.bases, enzyme)
+      const sites = findRestrictionSites(sequence.bases, enzyme, sequence.isCircular)
       if (sites.length > 0) {
         results.push({
           name: enzyme.name,
@@ -49,16 +50,22 @@ export function RestrictionEnzymePanel({ onClose }: RestrictionEnzymePanelProps)
     return results.sort((a, b) => a.name.localeCompare(b.name))
   }, [sequence])
 
-  // Filtered list based on search
+  // Filtered list based on search and unique/all filter
   const filteredEnzymes = useMemo(() => {
-    if (!search) return enzymesInSequence
-    const q = search.toLowerCase()
-    return enzymesInSequence.filter(
-      (e) =>
-        e.name.toLowerCase().includes(q) ||
-        e.recSeq.toLowerCase().includes(q),
-    )
-  }, [enzymesInSequence, search])
+    let list = enzymesInSequence
+    if (filter === 'unique') {
+      list = list.filter((e) => e.count === 1)
+    }
+    if (search) {
+      const q = search.toLowerCase()
+      list = list.filter(
+        (e) =>
+          e.name.toLowerCase().includes(q) ||
+          e.recSeq.toLowerCase().includes(q),
+      )
+    }
+    return list
+  }, [enzymesInSequence, search, filter])
 
   // All enzymes not in sequence, for reference
   const absentEnzymes = useMemo(() => {
@@ -84,7 +91,7 @@ export function RestrictionEnzymePanel({ onClose }: RestrictionEnzymePanelProps)
       const allSites: RestrictionSite[] = []
       for (const enzyme of COMMON_ENZYMES) {
         if (enzymeNames.has(enzyme.name)) {
-          const sites = findRestrictionSites(sequence.bases, enzyme)
+          const sites = findRestrictionSites(sequence.bases, enzyme, sequence.isCircular)
           allSites.push(...sites)
         }
       }
@@ -198,6 +205,30 @@ export function RestrictionEnzymePanel({ onClose }: RestrictionEnzymePanelProps)
         >
           <EyeOff className="h-3.5 w-3.5 text-[#9c9690]" />
           Hide all
+        </button>
+      </div>
+
+      {/* Unique / All filter */}
+      <div className="flex gap-1 border-b border-[#e8e5df] px-3 py-1.5">
+        <button
+          onClick={() => setFilter('unique')}
+          className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+            filter === 'unique'
+              ? 'bg-emerald-100 text-emerald-700'
+              : 'bg-[#f5f3ee] text-[#6b6560] hover:bg-[#eae7e1]'
+          }`}
+        >
+          Unique cutters
+        </button>
+        <button
+          onClick={() => setFilter('all')}
+          className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+            filter === 'all'
+              ? 'bg-emerald-100 text-emerald-700'
+              : 'bg-[#f5f3ee] text-[#6b6560] hover:bg-[#eae7e1]'
+          }`}
+        >
+          All cutters
         </button>
       </div>
 

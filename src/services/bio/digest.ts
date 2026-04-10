@@ -60,7 +60,7 @@ export function digestSequence(
   for (const name of enzymeNames) {
     const enzyme = [...COMMON_ENZYMES, ...TYPE_IIS_ENZYMES].find((e) => e.name === name)
     if (!enzyme) continue
-    const sites = findRestrictionSites(sequence.bases, enzyme)
+    const sites = findRestrictionSites(sequence.bases, enzyme, sequence.isCircular)
     for (const site of sites) {
       cutSites.push({
         position: site.position + site.cutOffset,

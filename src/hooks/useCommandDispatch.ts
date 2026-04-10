@@ -108,7 +108,7 @@ export function useCommandDispatch() {
         case 'find-restriction-sites': {
           const seq = useSequenceStore.getState().sequence
           if (!seq) return
-          const siteMap = findAllRestrictionSites(seq.bases)
+          const siteMap = findAllRestrictionSites(seq.bases, undefined, seq.isCircular)
           const allSites: import('@/types').RestrictionSite[] = []
           siteMap.forEach((sites) => allSites.push(...sites))
           useSequenceStore.getState().updateRestrictionSites(allSites)

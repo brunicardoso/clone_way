@@ -39,7 +39,7 @@ export function DigestDialog({
     if (!sequence) return []
     const results: { name: string; recSeq: string; count: number; overhang: string }[] = []
     for (const enzyme of COMMON_ENZYMES) {
-      const sites = findRestrictionSites(sequence.bases, enzyme)
+      const sites = findRestrictionSites(sequence.bases, enzyme, sequence.isCircular)
       if (sites.length > 0) {
         results.push({
           name: enzyme.name,

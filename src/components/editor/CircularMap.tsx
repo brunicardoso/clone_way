@@ -294,43 +294,157 @@ interface ExternalLabelPlacement extends ExternalLabel {
   labelAngle: number
 }
 
-/** Place external labels in a circular arrangement around the map. */
+/** Angular half-width of a label's text/badge at a given radius. */
+function labelHalfAngle(name: string, radius: number): number {
+  const textPx = name.length * SMALL_BADGE_CHAR_W + SMALL_BADGE_PAD_X * 2
+  return textPx / (2 * radius)
+}
+
+/** Pixel bounding box of a placed label. */
+interface LabelBox { left: number; right: number; top: number; bottom: number }
+
+function getLabelBox(lx: number, ly: number, name: string, side: 'left' | 'right'): LabelBox {
+  const w = name.length * SMALL_BADGE_CHAR_W + SMALL_BADGE_PAD_X * 2
+  const h = SMALL_BADGE_H + 2 // 2px padding
+  const left = side === 'right' ? lx + 2 : lx - w - 2
+  return { left, right: left + w, top: ly - h / 2, bottom: ly + h / 2 }
+}
+
+function boxesOverlap(a: LabelBox, b: LabelBox): boolean {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
+}
+
+/**
+ * Place external labels radially around the map with zero overlap.
+ *
+ * Three-pass strategy:
+ *  1. Greedy radial tier assignment — distribute nearby labels across different radii.
+ *  2. Per-tier angular push — within each tier, spread labels using text-width-aware
+ *     minimum separation. Since each tier holds ~1/3 of labels, displacement is small.
+ *  3. x,y bounding-box overlap resolution — compute actual pixel bounding boxes and
+ *     iteratively nudge any remaining overlapping pairs apart.
+ */
 function assignExternalLabels(items: ExternalLabel[]): ExternalLabelPlacement[] {
   if (items.length === 0) return []
 
-  // Sort all items by angle for even circular distribution
   const sorted = [...items].sort((a, b) => a.angle - b.angle)
+  const n = sorted.length
 
-  // Minimum angular separation between labels (in radians)
-  const minSep = Math.max(0.08, (2 * Math.PI) / Math.max(sorted.length, 1) * 0.8)
+  const NUM_TIERS = 3
+  const TIER_STEP = 20
+  const PAD_RAD = 0.03
 
-  // Assign label angles: start from each item's natural angle, then push apart if overlapping
-  const labelAngles: number[] = sorted.map((item) => item.angle)
+  const halfWidths = sorted.map((it) => labelHalfAngle(it.name, LABEL_RADIUS))
 
-  // Push overlapping labels apart (multiple passes)
-  for (let pass = 0; pass < 20; pass++) {
-    let moved = false
-    for (let i = 0; i < labelAngles.length; i++) {
-      const next = (i + 1) % labelAngles.length
-      let gap = labelAngles[next] - labelAngles[i]
-      if (next === 0) gap += Math.PI * 2  // wrap
-      if (gap < minSep) {
-        const push = (minSep - gap) / 2
-        labelAngles[i] -= push
-        labelAngles[next] += push
-        moved = true
+  // ── Pass 1: greedy tier assignment ──
+  const tiers = new Array<number>(n)
+  const tierTrail = new Array<number>(NUM_TIERS).fill(-Infinity)
+
+  for (let i = 0; i < n; i++) {
+    const angle = sorted[i].angle
+    const leadEdge = angle - halfWidths[i]
+
+    let bestTier = 0
+    let bestClearance = -Infinity
+    for (let t = 0; t < NUM_TIERS; t++) {
+      const clearance = leadEdge - tierTrail[t] - PAD_RAD
+      if (clearance > bestClearance) {
+        bestClearance = clearance
+        bestTier = t
       }
     }
-    if (!moved) break
+
+    tiers[i] = bestTier
+    tierTrail[bestTier] = angle + halfWidths[i]
   }
 
-  return sorted.map((item, i) => {
-    const lAngle = labelAngles[i]
-    const lx = CENTER + LABEL_RADIUS * Math.cos(lAngle)
-    const ly = CENTER + LABEL_RADIUS * Math.sin(lAngle)
-    const side = Math.cos(lAngle) >= 0 ? 'right' as const : 'left' as const
-    return { ...item, side, labelX: lx, labelY: ly, labelAngle: lAngle }
-  })
+  // ── Pass 2: per-tier angular push ──
+  const adjustedAngles = sorted.map((it) => it.angle)
+
+  for (let tier = 0; tier < NUM_TIERS; tier++) {
+    const idx: number[] = []
+    for (let i = 0; i < n; i++) if (tiers[i] === tier) idx.push(i)
+    if (idx.length <= 1) continue
+
+    const tierAngles = idx.map((i) => adjustedAngles[i])
+
+    for (let pass = 0; pass < 20; pass++) {
+      let moved = false
+      for (let j = 0; j < tierAngles.length; j++) {
+        const next = (j + 1) % tierAngles.length
+        const minSep = halfWidths[idx[j]] + halfWidths[idx[next]] + PAD_RAD
+        let gap = tierAngles[next] - tierAngles[j]
+        if (next === 0) gap += Math.PI * 2
+        if (gap < minSep) {
+          const push = (minSep - gap) / 2
+          tierAngles[j] -= push
+          tierAngles[next] += push
+          moved = true
+        }
+      }
+      if (!moved) break
+    }
+
+    for (let j = 0; j < idx.length; j++) {
+      adjustedAngles[idx[j]] = tierAngles[j]
+    }
+  }
+
+  // Helper to compute position from angle + tier
+  const toPos = (angle: number, tier: number) => {
+    const r = LABEL_RADIUS + tier * TIER_STEP
+    return {
+      x: CENTER + r * Math.cos(angle),
+      y: CENTER + r * Math.sin(angle),
+      side: (Math.cos(angle) >= 0 ? 'right' : 'left') as 'left' | 'right',
+    }
+  }
+
+  // ── Pass 3: x,y bounding-box overlap resolution ──
+  // Compute initial positions, then iteratively fix any remaining pixel overlaps.
+  const positions = sorted.map((_, i) => toPos(adjustedAngles[i], tiers[i]))
+
+  for (let pass = 0; pass < 15; pass++) {
+    let anyOverlap = false
+
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const boxA = getLabelBox(positions[i].x, positions[i].y, sorted[i].name, positions[i].side)
+        const boxB = getLabelBox(positions[j].x, positions[j].y, sorted[j].name, positions[j].side)
+
+        if (!boxesOverlap(boxA, boxB)) continue
+        anyOverlap = true
+
+        const overlapX = Math.min(boxA.right, boxB.right) - Math.max(boxA.left, boxB.left)
+        const overlapY = Math.min(boxA.bottom, boxB.bottom) - Math.max(boxA.top, boxB.top)
+
+        if (overlapY <= overlapX) {
+          // Resolve by nudging angles apart (changes Y primarily for labels on the sides)
+          const nudge = 0.04
+          adjustedAngles[i] -= nudge / 2
+          adjustedAngles[j] += nudge / 2
+        } else {
+          // Resolve by pushing the inner label to a further tier
+          const innerIdx = tiers[i] <= tiers[j] ? j : i
+          tiers[innerIdx] = Math.min(tiers[innerIdx] + 1, NUM_TIERS + 2)
+        }
+
+        // Recompute both positions
+        positions[i] = toPos(adjustedAngles[i], tiers[i])
+        positions[j] = toPos(adjustedAngles[j], tiers[j])
+      }
+    }
+
+    if (!anyOverlap) break
+  }
+
+  return sorted.map((item, i) => ({
+    ...item,
+    side: positions[i].side,
+    labelX: positions[i].x,
+    labelY: positions[i].y,
+    labelAngle: adjustedAngles[i],
+  }))
 }
 
 /** Compute GC content as a percentage. */
@@ -363,6 +477,7 @@ export function CircularMap({ sequence: sequenceProp }: CircularMapProps = {}) {
     featureColors: COLOR_PALETTES[colorPalette],
   }), [colorPalette])
   const [hoverBp, setHoverBp] = useState<number | null>(null)
+  const [showSmallLabels, setShowSmallLabels] = useState(true)
   const svgRef = useRef<SVGSVGElement>(null)
 
   const handleMouseMove = useCallback(
@@ -454,21 +569,30 @@ export function CircularMap({ sequence: sequenceProp }: CircularMapProps = {}) {
 
     const items: ExternalLabel[] = []
 
-    // Add restriction site labels
-    if (showRestrictionSites) {
+    // Add restriction site labels (grouped by position to avoid duplicates from isoschizomers)
+    if (showRestrictionSites && showSmallLabels) {
+      const sitesByPosition = new Map<number, string[]>()
       for (const site of sequence.restrictionSites) {
+        const existing = sitesByPosition.get(site.position)
+        if (existing) {
+          if (!existing.includes(site.enzyme)) existing.push(site.enzyme)
+        } else {
+          sitesByPosition.set(site.position, [site.enzyme])
+        }
+      }
+      for (const [position, enzymes] of sitesByPosition) {
         items.push({
-          id: `site-${site.enzyme}-${site.position}`,
-          name: site.enzyme,
-          angle: bpToAngle(site.position, sequence.length),
+          id: `site-${position}`,
+          name: enzymes.join(' / '),
+          angle: bpToAngle(position, sequence.length),
           kind: 'site',
           color: theme.colors.restrictionSite,
         })
       }
     }
 
-    // Add small feature labels
-    if (showFeatures) {
+    // Add small feature labels (only when showSmallLabels is on)
+    if (showFeatures && showSmallLabels) {
       for (const f of smallFeatures) {
         const midBp = f.start <= f.end
           ? (f.start + f.end) / 2
@@ -486,8 +610,15 @@ export function CircularMap({ sequence: sequenceProp }: CircularMapProps = {}) {
       }
     }
 
+    // If too many labels, hide restriction site labels to keep map readable
+    // (markers on the backbone are still shown)
+    if (items.length > 40) {
+      const filtered = items.filter((it) => it.kind !== 'site')
+      return assignExternalLabels(filtered)
+    }
+
     return assignExternalLabels(items)
-  }, [sequence, showFeatures, showRestrictionSites, smallFeatures, featureTrackMap])
+  }, [sequence, showFeatures, showRestrictionSites, showSmallLabels, smallFeatures, featureTrackMap])
 
   // Ruler ticks (major only)
   const rulerTicks = useMemo(() => {
@@ -621,6 +752,29 @@ export function CircularMap({ sequence: sequenceProp }: CircularMapProps = {}) {
               {p}
             </button>
           ))}
+        </div>
+        <div className="flex items-center gap-0.5 rounded border border-[#e8e5df] bg-white/90 px-1.5 py-1 shadow-sm backdrop-blur-sm">
+          <span className="text-[9px] text-[#9c9690] select-none mr-1">Labels</span>
+          <button
+            onClick={() => setShowSmallLabels(true)}
+            className={`rounded px-1.5 py-0.5 text-[8px] font-medium transition-colors ${
+              showSmallLabels
+                ? 'bg-[#6b6560] text-white'
+                : 'text-[#9c9690] hover:bg-[#eae7e1]'
+            }`}
+          >
+            All
+          </button>
+          <button
+            onClick={() => setShowSmallLabels(false)}
+            className={`rounded px-1.5 py-0.5 text-[8px] font-medium transition-colors ${
+              !showSmallLabels
+                ? 'bg-[#6b6560] text-white'
+                : 'text-[#9c9690] hover:bg-[#eae7e1]'
+            }`}
+          >
+            Major
+          </button>
         </div>
       </div>
 
@@ -808,101 +962,104 @@ export function CircularMap({ sequence: sequenceProp }: CircularMapProps = {}) {
           )
         })}
 
-        {/* ── Restriction site markers ─────────────────────────────── */}
+        {/* ── Restriction site markers (deduplicated by position) ──── */}
         {showRestrictionSites &&
-          sequence.restrictionSites.map((site, i) => {
-            const angle = bpToAngle(site.position, seqLen)
+          (() => {
+            // Group by position to avoid overlapping markers from isoschizomers
+            const seen = new Map<number, string[]>()
+            for (const site of sequence.restrictionSites) {
+              const existing = seen.get(site.position)
+              if (existing) {
+                if (!existing.includes(site.enzyme)) existing.push(site.enzyme)
+              } else {
+                seen.set(site.position, [site.enzyme])
+              }
+            }
+            return [...seen.entries()].map(([position, enzymes]) => {
+              const angle = bpToAngle(position, seqLen)
+              const label = enzymes.join(' / ') + ` at ${position}`
 
-            if (theme.style.restrictionSiteCircles) {
-              // Hollow circle marker at backbone radius
-              const pos = polarToCart(angle, BACKBONE_RADIUS)
+              if (theme.style.restrictionSiteCircles) {
+                const pos = polarToCart(angle, BACKBONE_RADIUS)
+                return (
+                  <g key={`site-${position}`}>
+                    <circle
+                      cx={pos.x}
+                      cy={pos.y}
+                      r={theme.style.restrictionSiteCircleRadius}
+                      fill="none"
+                      stroke={theme.colors.restrictionSite}
+                      strokeWidth={theme.strokes.restrictionMarker}
+                      {...NSS}
+                    />
+                    <title>{label}</title>
+                  </g>
+                )
+              }
+
+              const inner = polarToCart(angle, SITE_TICK_INNER)
+              const outer = polarToCart(angle, SITE_TICK_OUTER)
               return (
-                <g key={`site-${i}`}>
-                  <circle
-                    cx={pos.x}
-                    cy={pos.y}
-                    r={theme.style.restrictionSiteCircleRadius}
-                    fill="none"
+                <g key={`site-${position}`}>
+                  <line
+                    x1={inner.x} y1={inner.y}
+                    x2={outer.x} y2={outer.y}
                     stroke={theme.colors.restrictionSite}
                     strokeWidth={theme.strokes.restrictionMarker}
                     {...NSS}
                   />
-                  <title>{site.enzyme} at {site.position}</title>
+                  <title>{label}</title>
                 </g>
               )
-            }
+            })
+          })()}
 
-            // Tick fallback for themes that don't use circles
-            const inner = polarToCart(angle, SITE_TICK_INNER)
-            const outer = polarToCart(angle, SITE_TICK_OUTER)
-            return (
-              <g key={`site-${i}`}>
-                <line
-                  x1={inner.x} y1={inner.y}
-                  x2={outer.x} y2={outer.y}
-                  stroke={theme.colors.restrictionSite}
-                  strokeWidth={theme.strokes.restrictionMarker}
-                  {...NSS}
-                />
-                <title>{site.enzyme} at {site.position}</title>
-              </g>
-            )
-          })}
-
-        {/* ── Unified external labels (restriction sites + small features) ── */}
+        {/* ── External label leader lines (rendered first so labels sit on top) ── */}
         {externalLabels.map((item) => {
-          // Anchor point: where the leader starts on the map
           const anchorR = item.kind === 'site'
             ? BACKBONE_RADIUS + theme.style.restrictionSiteCircleRadius + 1
             : (item.anchorRadius ?? OUTER_FEATURE_RADIUS)
           const anchorPos = polarToCart(item.angle, anchorR)
-
-          // Elbow: always radially outward from anchor
           const elbowR = Math.max(anchorR + 4, LABEL_ELBOW_RADIUS)
           const elbowPos = polarToCart(item.angle, elbowR)
+          return (
+            <polyline
+              key={`leader-${item.id}`}
+              points={`${anchorPos.x},${anchorPos.y} ${elbowPos.x},${elbowPos.y} ${item.labelX},${item.labelY}`}
+              fill="none"
+              stroke={theme.colors.leaderLine}
+              strokeWidth={theme.strokes.leaderLine}
+              {...NSS}
+            />
+          )
+        })}
 
-          // Text anchor: right-side labels start from left edge, left-side from right edge
+        {/* ── External label text/badges (on top of leader lines) ── */}
+        {externalLabels.map((item) => {
           const textAnchor = item.side === 'right' ? 'start' : 'end'
-          // Nudge text slightly outward from the label point
           const nudge = item.side === 'right' ? 3 : -3
 
           if (item.kind === 'site') {
             return (
-              <g key={`el-${item.id}`}>
-                <polyline
-                  points={`${anchorPos.x},${anchorPos.y} ${elbowPos.x},${elbowPos.y} ${item.labelX},${item.labelY}`}
-                  fill="none"
-                  stroke={theme.colors.leaderLine}
-                  strokeWidth={theme.strokes.leaderLine}
-                  {...NSS}
-                />
-                <text
-                  x={item.labelX + nudge} y={item.labelY}
-                  fill={theme.colors.restrictionSiteLabel}
-                  fontSize={theme.typography.externalLabelSize}
-                  fontFamily={theme.typography.fontFamily}
-                  fontWeight={theme.typography.nameWeight}
-                  textAnchor={textAnchor}
-                  dominantBaseline="middle"
-                >
-                  {item.name}
-                </text>
-              </g>
+              <text
+                key={`el-${item.id}`}
+                x={item.labelX + nudge} y={item.labelY}
+                fill={theme.colors.restrictionSiteLabel}
+                fontSize={theme.typography.externalLabelSize}
+                fontFamily={theme.typography.fontFamily}
+                fontWeight={theme.typography.nameWeight}
+                textAnchor={textAnchor}
+                dominantBaseline="middle"
+              >
+                {item.name}
+              </text>
             )
           }
 
-          // Small feature: outlined pill badge with leader
           const badgeW = item.name.length * SMALL_BADGE_CHAR_W + SMALL_BADGE_PAD_X * 2
           const badgeX = item.side === 'right' ? item.labelX + 2 : item.labelX - badgeW - 2
           return (
             <g key={`el-${item.id}`}>
-              <polyline
-                points={`${anchorPos.x},${anchorPos.y} ${elbowPos.x},${elbowPos.y} ${item.labelX},${item.labelY}`}
-                fill="none"
-                stroke={theme.colors.leaderLine}
-                strokeWidth={theme.strokes.leaderLine}
-                {...NSS}
-              />
               <rect
                 x={badgeX} y={item.labelY - SMALL_BADGE_H / 2}
                 width={badgeW} height={SMALL_BADGE_H}

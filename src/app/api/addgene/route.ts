@@ -3,13 +3,24 @@ import { checkRateLimit } from '@/lib/rateLimit'
 
 export const dynamic = 'force-dynamic'
 
+const UA =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)'
+
 export async function GET(request: NextRequest) {
-  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
-  const { allowed, retryAfterMs } = checkRateLimit(`addgene:${ip}`, 10, 60_000)
+  const ip =
+    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+  const { allowed, retryAfterMs } = checkRateLimit(
+    `addgene:${ip}`,
+    10,
+    60_000,
+  )
   if (!allowed) {
     return NextResponse.json(
       { error: 'Too many requests. Try again later.' },
-      { status: 429, headers: { 'Retry-After': String(Math.ceil(retryAfterMs / 1000)) } },
+      {
+        status: 429,
+        headers: { 'Retry-After': String(Math.ceil(retryAfterMs / 1000)) },
+      },
     )
   }
 
@@ -23,13 +34,11 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const pageUrl = `https://www.addgene.org/${id}/sequences/`
+    // Step 1: Fetch the main plasmid page to get cookies and extract sequence IDs
+    const pageUrl = `https://www.addgene.org/${id}/`
     const pageRes = await fetch(pageUrl, {
       cache: 'no-store',
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)',
-      },
+      headers: { 'User-Agent': UA },
     })
 
     if (!pageRes.ok) {
@@ -45,74 +54,68 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    // Extract cookies from page response to forward to CDN requests
+    // Extract cookies to forward to CDN requests
     const setCookies = pageRes.headers.getSetCookie?.() ?? []
-    const cookieHeader = setCookies
-      .map((c) => c.split(';')[0])
-      .join('; ')
+    const cookieHeader = setCookies.map((c) => c.split(';')[0]).join('; ')
 
     const html = await pageRes.text()
 
-    // Extract the plasmid name from the page HTML
-    const titleMatch = html.match(
-      /<h1[^>]*class="material-name"[^>]*>\s*(.*?)\s*<\/h1>/,
-    )
-    const plasmidName =
-      titleMatch?.[1]?.replace(/<[^>]+>/g, '').trim() || `Addgene_${id}`
+    // Extract plasmid name from page title: "Addgene: <name>"
+    const titleMatch = html.match(/<title>Addgene:\s*(.*?)<\/title>/)
+    const plasmidName = titleMatch?.[1]?.trim() || `Addgene_${id}`
 
-    // Strategy 1: Try to download GenBank files from the CDN (try all matches)
-    const gbkMatches = html.matchAll(
-      /https:\/\/media\.addgene\.org\/snapgene-media\/[^"'\s]+\.gbk/g,
-    )
+    // Step 2: Extract sequence object IDs from the page (snapgene-NNNN pattern)
+    const seqIds = [...new Set(html.match(/snapgene-(\d+)/g))]
+      .map((m) => m.replace('snapgene-', ''))
 
-    for (const gbkMatch of gbkMatches) {
+    if (seqIds.length === 0) {
+      return NextResponse.json(
+        {
+          error:
+            'No sequence data found for this plasmid. The depositor may not have provided a full sequence.',
+        },
+        { status: 404 },
+      )
+    }
+
+    // Step 3: For each sequence ID, call the file-collection API to get the GenBank CDN URL
+    for (const seqId of seqIds) {
       try {
-        const gbkRes = await fetch(gbkMatch[0], {
+        const apiRes = await fetch(
+          `https://www.addgene.org/api/get-sequence-file-collection/${seqId}/`,
+          {
+            cache: 'no-store',
+            headers: { 'User-Agent': UA },
+          },
+        )
+        if (!apiRes.ok) continue
+
+        const data = await apiRes.json()
+        const gbkUrl = data.genbankUrl
+        if (!gbkUrl || data.inProgress) continue
+
+        // Step 4: Download GenBank from CDN (requires cookies from page request)
+        const gbkRes = await fetch(gbkUrl, {
           cache: 'no-store',
           headers: {
-            'User-Agent':
-              'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)',
+            'User-Agent': UA,
             Referer: pageUrl,
             ...(cookieHeader ? { Cookie: cookieHeader } : {}),
           },
         })
 
-        if (gbkRes.ok) {
-          const genbank = await gbkRes.text()
-          if (genbank.startsWith('LOCUS')) {
-            return NextResponse.json({
-              name: plasmidName,
-              genbank,
-              format: 'genbank',
-              addgeneId: id,
-            })
-          }
-        }
-      } catch {
-        // CDN download failed, try next URL
-      }
-    }
+        if (!gbkRes.ok) continue
+        const genbank = await gbkRes.text()
+        if (!genbank.trimStart().startsWith('LOCUS')) continue
 
-    // Strategy 2: Extract FASTA sequence from the page HTML
-    const fastaMatch = html.match(
-      /id="sequence-(\d+)-text"[^>]*>([\s\S]*?)<\/textarea>/,
-    )
-
-    if (fastaMatch) {
-      const rawFasta = fastaMatch[2]
-        .replace(/&gt;/g, '>')
-        .replace(/&lt;/g, '<')
-        .replace(/&amp;/g, '&')
-        .trim()
-
-      if (rawFasta) {
         return NextResponse.json({
           name: plasmidName,
-          genbank: rawFasta, // kept as 'genbank' for backward compat with client
-          fasta: rawFasta,
-          format: 'fasta',
+          genbank,
+          format: 'genbank',
           addgeneId: id,
         })
+      } catch {
+        // Try next sequence ID
       }
     }
 
